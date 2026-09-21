@@ -57,9 +57,71 @@ const cancelledDownloadTokens = new WeakSet<CancellationToken>();
 let pendingCancelledDownloadErrorCount = 0;
 let autoUpdaterSettingService: SettingServiceLike | undefined;
 // initAutoUpdater({ enabled: false }) 只清轮询并 return，electron-updater 实例保持未配置
-// （占位 feed、autoDownload 默认值）。任何漏改成按身份判断的入口若仍调用手动检查，
-// 都会对占位 feed 发真实请求。这里记住“本 flavor 已禁用”，让手动检查在模块内部 fail-closed。
+//（占位 feed、autoDownload 默认值）。任何漏改成按身份判断的入口若仍调用手动检查，
+//都会对占位 feed 发真实请求。这里记住”本 flavor 已禁用”，让手动检查在模块内部 fail-closed。
 let autoUpdaterDisabledForProductFlavor = false;
+
+/**
+ * 官方上游仓库（zai-org/zcode）的信息
+ */
+const OFFICIAL_UPSTREAM = {
+  owner: 'zai-org',
+  repo: 'zcode',
+};
+
+/**
+ * 从 GitHub API 获取官方最新版本号
+ */
+async function getOfficialLatestVersion(): Promise<string | null> {
+  try {
+    const response = await fetch(`https://api.github.com/repos/${OFFICIAL_UPSTREAM.owner}/${OFFICIAL_UPSTREAM.repo}/releases/latest`);
+    if (!response.ok) {
+      logger.warn(`[auto-update] failed to fetch official latest release: ${response.status}`);
+      return null;
+    }
+    const data = await response.json();
+    const version = data.tag_name?.replace(/^v/, '') || null;
+    if (version) {
+      logger.info(`[auto-update] official latest version: ${version}`);
+    }
+    return version;
+  } catch (error) {
+    logger.warn(`[auto-update] error fetching official version:`, error);
+    return null;
+  }
+}
+
+/**
+ * 解析版本号为基础版本（去除 fork suffix）
+ * v1.2.3-fork.456 → 1.2.3
+ */
+function parseBaseVersion(version: string): string | null {
+  const base = version.split('-')[0].replace(/^v/, '');
+  return semver.valid(base) || null;
+}
+
+/**
+ * 比较当前版本与官方版本的更新状态
+ * @returns 'official_newer' | 'ours_newer' | 'same_base'
+ */
+function compareWithOfficial(officialVersion: string): 'official_newer' | 'ours_newer' | 'same_base' {
+  const officialBase = parseBaseVersion(officialVersion);
+  const ourVersion = getCurrentAppVersionForUpdate();
+  const ourBase = parseBaseVersion(ourVersion);
+  
+  if (!officialBase || !ourBase) {
+    logger.warn(`[auto-update] invalid version format for comparison: official=${officialVersion}, ours=${ourVersion}`);
+    return 'same_base';
+  }
+  
+  if (semver.gt(ourBase, officialBase)) {
+    return 'ours_newer';
+  } else if (semver.lt(ourBase, officialBase)) {
+    return 'official_newer';
+  }
+  return 'same_base';
+}
+
 
 type SettingServiceLike = Pick<ISettingService, "get" | "update">;
 
@@ -1581,6 +1643,38 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
         });
         return;
       }
+
+      // 获取并对比官方版本（异步执行，不阻塞更新流程）
+      void getOfficialLatestVersion().then(async officialVersion => {
+        if (officialVersion) {
+          const comparison = compareWithOfficial(officialVersion);
+          const officialBase = parseBaseVersion(officialVersion)!;
+          const ourBase = parseBaseVersion(getCurrentAppVersionForUpdate())!;
+          
+          logger.info(`[auto-update] version comparison: ours ${ourBase} vs official ${officialBase} -> ${comparison}`);
+          
+          // 如果我们比官方新，通知 renderer 展示自定义提示消息
+          if (comparison === 'ours_newer') {
+            logger.info(`[auto-update] custom build ${ourBase}-fork is newer than official ${officialBase}, notify renderer`);
+            // 广播给 renderer 以显示自定义提示
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) {
+                win.webContents.send(PlatformChannels.UpdateCustomMessage, {
+                  officialVersion: officialBase,
+                  ourVersion: ourBase,
+                  message: menuLocale === 'zh-CN'
+                    ? `官方已发布 ${officialBase}，但我们这里有更新的自定义版本 ${ourBase}-fork。\n建议安装这个最新版本。`
+                    : `Official version ${officialBase} has been released, but we have a newer custom build ${ourBase}-fork.\nRecommended to install this latest version.`,
+                });
+              }
+            }
+          }
+        } else {
+          logger.info(`[auto-update] no official version retrieved, using default flow`);
+        }
+      }).catch(error => {
+        logger.warn(`[auto-update] error checking official version:`, error);
+      });
 
       availableUpdateReleaseNotes = toPostUpdateReleaseNotesPayload(info);
       if (readyUpdateRestoredFromPendingReleaseNotes) {
