@@ -62,37 +62,38 @@ let autoUpdaterSettingService: SettingServiceLike | undefined;
 let autoUpdaterDisabledForProductFlavor = false;
 
 /**
- * 官方上游仓库（zai-org/zcode）的信息
+ * 用于版本对比的自建 GitHub 发布仓库（My-Search/ZCode）信息。
+ * 不再使用官方上游 zai-org/zcode 作为更新来源。
  */
-const OFFICIAL_UPSTREAM = {
-  owner: 'zai-org',
-  repo: 'zcode',
+const GITHUB_UPDATE_REPO = {
+  owner: 'My-Search',
+  repo: 'ZCode',
 };
 
 /**
- * 从 GitHub API 获取官方最新版本号
+ * 从 GitHub API 获取自建仓库最新发布版本号
  */
-async function getOfficialLatestVersion(): Promise<string | null> {
+async function getGithubLatestVersion(): Promise<string | null> {
   try {
-    const response = await fetch(`https://api.github.com/repos/${OFFICIAL_UPSTREAM.owner}/${OFFICIAL_UPSTREAM.repo}/releases/latest`);
+    const response = await fetch(`https://api.github.com/repos/${GITHUB_UPDATE_REPO.owner}/${GITHUB_UPDATE_REPO.repo}/releases/latest`);
     if (!response.ok) {
-      logger.warn(`[auto-update] failed to fetch official latest release: ${response.status}`);
+      logger.warn(`[auto-update] failed to fetch github latest release: ${response.status}`);
       return null;
     }
     const data = await response.json();
     const version = data.tag_name?.replace(/^v/, '') || null;
     if (version) {
-      logger.info(`[auto-update] official latest version: ${version}`);
+      logger.info(`[auto-update] github latest version: ${version}`);
     }
     return version;
   } catch (error) {
-    logger.warn(`[auto-update] error fetching official version:`, error);
+    logger.warn(`[auto-update] error fetching github version:`, error);
     return null;
   }
 }
 
 /**
- * 解析版本号为基础版本（去除 fork suffix）
+ * 解析版本号为基础版本，只看前面的版本号（去除 fork suffix）
  * v1.2.3-fork.456 → 1.2.3
  */
 function parseBaseVersion(version: string): string | null {
@@ -101,23 +102,23 @@ function parseBaseVersion(version: string): string | null {
 }
 
 /**
- * 比较当前版本与官方版本的更新状态
- * @returns 'official_newer' | 'ours_newer' | 'same_base'
+ * 比较当前版本与自建仓库最新发布的更新状态（只看前面的基础版本号）
+ * @returns 'repo_newer' | 'ours_newer' | 'same_base'
  */
-function compareWithOfficial(officialVersion: string): 'official_newer' | 'ours_newer' | 'same_base' {
-  const officialBase = parseBaseVersion(officialVersion);
+function compareWithGithubLatest(githubVersion: string): 'repo_newer' | 'ours_newer' | 'same_base' {
+  const githubBase = parseBaseVersion(githubVersion);
   const ourVersion = getCurrentAppVersionForUpdate();
   const ourBase = parseBaseVersion(ourVersion);
-  
-  if (!officialBase || !ourBase) {
-    logger.warn(`[auto-update] invalid version format for comparison: official=${officialVersion}, ours=${ourVersion}`);
+
+  if (!githubBase || !ourBase) {
+    logger.warn(`[auto-update] invalid version format for comparison: github=${githubVersion}, ours=${ourVersion}`);
     return 'same_base';
   }
-  
-  if (semver.gt(ourBase, officialBase)) {
+
+  if (semver.gt(ourBase, githubBase)) {
     return 'ours_newer';
-  } else if (semver.lt(ourBase, officialBase)) {
-    return 'official_newer';
+  } else if (semver.lt(ourBase, githubBase)) {
+    return 'repo_newer';
   }
   return 'same_base';
 }
@@ -1644,36 +1645,36 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
         return;
       }
 
-      // 获取并对比官方版本（异步执行，不阻塞更新流程）
-      void getOfficialLatestVersion().then(async officialVersion => {
-        if (officialVersion) {
-          const comparison = compareWithOfficial(officialVersion);
-          const officialBase = parseBaseVersion(officialVersion)!;
+      // 获取并对比自建仓库最新发布版本（异步执行，不阻塞更新流程），只看前面的基础版本号
+      void getGithubLatestVersion().then(async githubVersion => {
+        if (githubVersion) {
+          const comparison = compareWithGithubLatest(githubVersion);
+          const githubBase = parseBaseVersion(githubVersion)!;
           const ourBase = parseBaseVersion(getCurrentAppVersionForUpdate())!;
-          
-          logger.info(`[auto-update] version comparison: ours ${ourBase} vs official ${officialBase} -> ${comparison}`);
-          
-          // 如果我们比官方新，通知 renderer 展示自定义提示消息
+
+          logger.info(`[auto-update] version comparison: ours ${ourBase} vs github ${githubBase} -> ${comparison}`);
+
+          // 如果我们的运行版本比自建仓库最新发布更新，通知 renderer 展示提示消息
           if (comparison === 'ours_newer') {
-            logger.info(`[auto-update] custom build ${ourBase}-fork is newer than official ${officialBase}, notify renderer`);
+            logger.info(`[auto-update] custom build ${ourBase}-fork is newer than github latest ${githubBase}, notify renderer`);
             // 广播给 renderer 以显示自定义提示
             for (const win of BrowserWindow.getAllWindows()) {
               if (!win.isDestroyed()) {
                 win.webContents.send(PlatformChannels.UpdateCustomMessage, {
-                  officialVersion: officialBase,
+                  githubVersion: githubBase,
                   ourVersion: ourBase,
                   message: menuLocale === 'zh-CN'
-                    ? `官方已发布 ${officialBase}，但我们这里有更新的自定义版本 ${ourBase}-fork。\n建议安装这个最新版本。`
-                    : `Official version ${officialBase} has been released, but we have a newer custom build ${ourBase}-fork.\nRecommended to install this latest version.`,
+                    ? `GitHub 发布仓库最新基础版本为 ${githubBase}，但我们有更新的自定义构建 ${ourBase}-fork。\n建议安装这个最新版本。`
+                    : `GitHub release base ${githubBase} is available, but we have a newer custom build ${ourBase}-fork.\nRecommended to install this latest version.`,
                 });
               }
             }
           }
         } else {
-          logger.info(`[auto-update] no official version retrieved, using default flow`);
+          logger.info(`[auto-update] no github version retrieved, using default flow`);
         }
       }).catch(error => {
-        logger.warn(`[auto-update] error checking official version:`, error);
+        logger.warn(`[auto-update] error checking github version:`, error);
       });
 
       availableUpdateReleaseNotes = toPostUpdateReleaseNotesPayload(info);
