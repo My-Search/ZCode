@@ -1,0 +1,302 @@
+name: Sync & Build Release
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      fork_suffix:
+        description: 'Fork build suffix number (default: auto from run number)'
+        type: string
+        required: false
+      dry_run:
+        description: 'Only check upstream — skip merge, build and release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+# ─── Environment-wide mirror for Electron downloads ──────────
+env:
+  ELECTRON_MIRROR: ${{ secrets.ELECTRON_MIRROR || 'https://npmmirror.com/mirrors/electron/' }}
+
+jobs:
+  # ═══════════════════════════════════════════════════════════
+  # 1) Sync: check upstream & merge (schedule) or skip (manual)
+  # ═══════════════════════════════════════════════════════════
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      version: ${{ steps.patch.outputs.version }}
+      release_tag: ${{ steps.patch.outputs.release_tag }}
+      build_date: ${{ steps.patch.outputs.build_date }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      # ── Upstream check (schedule trigger) ────────────────
+      - name: Check upstream for new commits
+        id: check
+        run: |
+          # On manual dispatch: skip sync, build from current HEAD
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — skip upstream check, build from current HEAD"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "current_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "upstream_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git remote add upstream https://github.com/zai-org/zcode.git
+          git fetch upstream --no-tags
+
+          CURRENT=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+
+          echo "current_sha=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT" = "$UPSTREAM" ]; then
+            echo "No new upstream commits (both at ${CURRENT:0:12})"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Upstream has new commits: ${CURRENT:0:12} -> ${UPSTREAM:0:12}"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream into fork
+        if: steps.check.outputs.should_build == 'true' && github.event_name == 'schedule'
+        run: |
+          git config user.name "ZCode Fork Sync Bot"
+          git config user.email "bot@users.noreply.github.com"
+          git merge --no-ff upstream/main \
+            -m "chore: sync upstream $(date -u +%Y-%m-%d)" \
+            -m "Upstream: ${{ steps.check.outputs.upstream_sha }}"
+          git push origin main
+
+      # ── Fork version tag ─────────────────────────────────
+      - name: Compute fork version
+        id: patch
+        run: |
+          BASE_VERSION=$(node -e "console.log(require('./package.json').version)")
+          SUFFIX=${{ github.event.inputs.fork_suffix || github.run_number }}
+          FORK_VERSION="${BASE_VERSION}-fork.${SUFFIX}"
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "version=${FORK_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v${FORK_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
+
+      # ── Dry-run early exit ─────────────────────────────
+      - name: Dry-run mode
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "# Dry-run mode" >> $GITHUB_STEP_SUMMARY
+          echo "Upstream check would have built from the current HEAD." >> $GITHUB_STEP_SUMMARY
+
+      # ── Summary (no new commits) ────────────────────────
+      - name: Summary
+        if: steps.check.outputs.should_build == 'false'
+        run: |
+          echo "## Sync result" >> $GITHUB_STEP_SUMMARY
+          echo "No new upstream commits — nothing to build." >> $GITHUB_STEP_SUMMARY
+
+  # ═══════════════════════════════════════════════════════════
+  # 2) Build matrix (4 platforms in parallel)
+  # ═══════════════════════════════════════════════════════════
+  build:
+    needs: [sync]
+    if: needs.sync.outputs.should_build == 'true' && github.event.inputs.dry_run != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target_os: mac
+            target_arch: arm64
+            pretty: macOS arm64
+
+          - runner: macos-13
+            target_os: mac
+            target_arch: x64
+            pretty: macOS x64
+
+          - runner: windows-latest
+            target_os: win
+            target_arch: x64
+            pretty: Windows x64
+
+          - runner: ubuntu-24.04
+            target_os: linux
+            target_arch: x64
+            pretty: Linux x64
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+
+    env:
+      ZCODE_ENV: production
+      ZCODE_TARGET_OS: ${{ matrix.target_os }}
+      ZCODE_TARGET_ARCH: ${{ matrix.target_arch }}
+      ZCODE_SKIP_REMOTE_ASSETS: '1'
+      ZCODE_ENABLE_MAC_SIGN: ${{ matrix.target_os == 'mac' && secrets.APPLE_SIGNING_IDENTITY != '' && '1' || '0' }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── macOS: import signing certificate ────────────────
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS' && env.ZCODE_ENABLE_MAC_SIGN == '1'
+        env:
+          CERT_BASE64: ${{ secrets.MACOS_CERTIFICATE }}
+          CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/zcode-signing.keychain-db
+          echo "$CERT_BASE64" | base64 --decode > $RUNNER_TEMP/cert.p12
+          security create-keychain -p temp "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 7200 "$KEYCHAIN_PATH"
+          security unlock-keychain -p temp "$KEYCHAIN_PATH"
+          security import $RUNNER_TEMP/cert.p12 \
+            -P "$CERT_PWD" \
+            -k "$KEYCHAIN_PATH" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/productsign
+          rm $RUNNER_TEMP/cert.p12
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | xargs)
+          security show-keychain-info "$KEYCHAIN_PATH"
+
+      # ── Linux: extra packaging deps ──────────────────────
+      - name: Install Linux packaging deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rpm xz-utils libfuse2 2>&1
+
+      # ── Toolchain ────────────────────────────────────────
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+          cache: 'pnpm'
+
+      # ── Patch version in root package.json ───────────────
+      - name: Patch package.json version
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+        run: >
+          ${{ runner.os == 'Windows' &&
+          '$p = Get-Content package.json -Raw | ConvertFrom-Json;
+           $p.version = '''${{ needs.sync.outputs.version }}''';
+           $p | ConvertTo-Json -Depth 10 | Set-Content package.json' ||
+          'node -e "const fs=require(''fs'');
+           const o=JSON.parse(fs.readFileSync(''package.json'',''utf8''));
+           o.version='''${{ needs.sync.outputs.version }}'';
+           fs.writeFileSync(''package.json'',JSON.stringify(o,null,2)+''\n'');"' }}
+
+      # ── Install → Build → Package (one command) ──────────
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build & package
+        run: pnpm bundle:desktop -- --os ${{ matrix.target_os }} --arch ${{ matrix.target_arch }}
+
+      # ── Upload artifacts ─────────────────────────────────
+      - name: Upload DMG / NSIS / AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.pretty }}
+          path: >
+            ${{ runner.os == 'macOS' && 'packages/desktop/dist/ZCode*.dmg' ||
+               runner.os == 'Windows' && 'packages/desktop/dist/ZCode*.exe' ||
+               'packages/desktop/dist/ZCode*.AppImage' }}
+          if-no-files-found: error
+
+      - name: Upload ZIP (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.pretty }}-zip
+          path: packages/desktop/dist/ZCode*.zip
+          if-no-files-found: warn
+
+      - name: Upload deb + rpm + pacman (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.pretty }}-extra
+          path: |
+            packages/desktop/dist/ZCode*.deb
+            packages/desktop/dist/ZCode*.rpm
+            packages/desktop/dist/ZCode*.pkg.tar.zst
+          if-no-files-found: warn
+
+  # ═══════════════════════════════════════════════════════════
+  # 3) Create GitHub Release with all artifacts
+  # ═══════════════════════════════════════════════════════════
+  release:
+    if: github.event.inputs.dry_run != 'true'
+    needs: [sync, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: _artifacts
+          merge-multiple: true
+
+      - name: Show downloaded files
+        run: |
+          echo "## Artifacts collected" >> $GITHUB_STEP_SUMMARY
+          ls -lhR _artifacts/ >> $GITHUB_STEP_SUMMARY
+
+      - name: Build release notes
+        id: notes
+        run: |
+          cat > _release_body.md <<'EOF'
+          # ZCode Fork Build
+
+          **Version:** ${{ needs.sync.outputs.version }}
+          **Build date:** ${{ needs.sync.outputs.build_date }}
+          **Source:** [My-Search/ZCode](https://github.com/My-Search/ZCode) — synced from [zai-org/zcode](https://github.com/zai-org/zcode)
+
+          ## Downloads
+
+          EOF
+
+          for f in _artifacts/*; do
+            if [ -f "$f" ]; then
+              NAME=$(basename "$f")
+              SIZE=$(du -h "$f" | cut -f1)
+              echo "- \`$NAME\` (${SIZE})" >> _release_body.md
+            fi
+          done
+
+          echo "" >> _release_body.md
+          echo "---" >> _release_body.md
+          echo "*macOS builds: ${{ secrets.APPLE_SIGNING_IDENTITY != '' && 'signed' || 'unsigned (right-click → Open)' }}*" >> _release_body.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.sync.outputs.release_tag }}
+          name: ZCode v${{ needs.sync.outputs.version }}
+          body_path: _release_body.md
+          draft: false
+          prerelease: false
+          files: _artifacts/*
