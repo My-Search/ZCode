@@ -126,7 +126,7 @@ jobs:
             target_arch: arm64
             pretty: macOS arm64
 
-          - runner: macos-13
+          - runner: macos-15
             target_os: mac
             target_arch: x64
             pretty: macOS x64
@@ -165,7 +165,7 @@ jobs:
           KEYCHAIN_PATH=$RUNNER_TEMP/zcode-signing.keychain-db
           echo "$CERT_BASE64" | base64 --decode > $RUNNER_TEMP/cert.p12
           security create-keychain -p temp "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 7200 "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
           security unlock-keychain -p temp "$KEYCHAIN_PATH"
           security import $RUNNER_TEMP/cert.p12 \
             -P "$CERT_PWD" \
@@ -174,7 +174,7 @@ jobs:
             -T /usr/bin/productsign
           rm $RUNNER_TEMP/cert.p12
           security list-keychains -d user -s "$KEYCHAIN_PATH" \
-            $(security list-keychains -d user | xargs)
+            $(security list-keychains -d user | awk '{print $NF}')
           security show-keychain-info "$KEYCHAIN_PATH"
 
       # ── Linux: extra packaging deps ──────────────────────
