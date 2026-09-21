@@ -1,6 +1,9 @@
 name: Sync & Build Release
 
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-release.yml']
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
