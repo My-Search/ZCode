@@ -192,17 +192,23 @@ jobs:
           cache: 'pnpm'
 
       # ── Patch version in root package.json ───────────────
-      - name: Patch package.json version
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
-        run: >
-          ${{ runner.os == 'Windows' &&
-          '$p = Get-Content package.json -Raw | ConvertFrom-Json;
-           $p.version = '''${{ needs.sync.outputs.version }}''';
-           $p | ConvertTo-Json -Depth 10 | Set-Content package.json' ||
-          'node -e "const fs=require(''fs'');
-           const o=JSON.parse(fs.readFileSync(''package.json'',''utf8''));
-           o.version='''${{ needs.sync.outputs.version }}'';
-           fs.writeFileSync(''package.json'',JSON.stringify(o,null,2)+''\n'');"' }}
+      - name: Patch package.json version (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Content package.json -Raw | ConvertFrom-Json
+          $p.version = '${{ needs.sync.outputs.version }}'
+          $p | ConvertTo-Json -Depth 10 | Set-Content package.json
+
+      - name: Patch package.json version (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          node -e "
+          const fs = require('fs');
+          const o = JSON.parse(fs.readFileSync('package.json','utf8'));
+          o.version = '${{ needs.sync.outputs.version }}';
+          fs.writeFileSync('package.json',JSON.stringify(o,null,2)+'\n');
+          "
 
       # ── Install → Build → Package (one command) ──────────
       - name: Install dependencies
@@ -212,14 +218,12 @@ jobs:
         run: pnpm bundle:desktop -- --os ${{ matrix.target_os }} --arch ${{ matrix.target_arch }}
 
       # ── Upload artifacts ─────────────────────────────────
-      - name: Upload DMG / NSIS / AppImage
+      - name: Upload DMG (macOS)
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.pretty }}
-          path: >
-            ${{ runner.os == 'macOS' && 'packages/desktop/dist/ZCode*.dmg' ||
-               runner.os == 'Windows' && 'packages/desktop/dist/ZCode*.exe' ||
-               'packages/desktop/dist/ZCode*.AppImage' }}
+          path: packages/desktop/dist/ZCode*.dmg
           if-no-files-found: error
 
       - name: Upload ZIP (macOS)
@@ -229,6 +233,22 @@ jobs:
           name: installer-${{ matrix.pretty }}-zip
           path: packages/desktop/dist/ZCode*.zip
           if-no-files-found: warn
+
+      - name: Upload NSIS installer (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.pretty }}
+          path: packages/desktop/dist/ZCode*.exe
+          if-no-files-found: error
+
+      - name: Upload AppImage (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.pretty }}
+          path: packages/desktop/dist/ZCode*.AppImage
+          if-no-files-found: error
 
       - name: Upload deb + rpm + pacman (Linux)
         if: runner.os == 'Linux'
