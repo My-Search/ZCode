@@ -226,7 +226,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.pretty }}
-          path: packages/desktop/dist/ZCode*.dmg
+          path: |
+            packages/desktop/dist/ZCode*.dmg
+            packages/desktop/dist/latest-mac.yml
           if-no-files-found: error
 
       - name: Upload ZIP (macOS)
@@ -234,7 +236,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.pretty }}-zip
-          path: packages/desktop/dist/ZCode*.zip
+          path: |
+            packages/desktop/dist/ZCode*.zip
+            packages/desktop/dist/latest-mac.yml
           if-no-files-found: warn
 
       - name: Upload NSIS installer (Windows)
@@ -242,7 +246,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.pretty }}
-          path: packages/desktop/dist/ZCode*.exe
+          path: |
+            packages/desktop/dist/ZCode*.exe
+            packages/desktop/dist/latest.yml
           if-no-files-found: error
 
       - name: Upload AppImage (Linux)
@@ -250,7 +256,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.pretty }}
-          path: packages/desktop/dist/ZCode*.AppImage
+          path: |
+            packages/desktop/dist/ZCode*.AppImage
+            packages/desktop/dist/latest-linux.yml
           if-no-files-found: error
 
       - name: Upload deb + rpm + pacman (Linux)
@@ -263,6 +271,7 @@ jobs:
             packages/desktop/dist/ZCode*.deb
             packages/desktop/dist/ZCode*.rpm
             packages/desktop/dist/ZCode*.pkg.tar.zst
+            packages/desktop/dist/latest-linux.yml
           if-no-files-found: warn
 
   # ═══════════════════════════════════════════════════════════

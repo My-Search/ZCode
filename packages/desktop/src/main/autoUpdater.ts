@@ -815,6 +815,21 @@ async function syncAutoUpdateCheckChannelFromSettings(
 }
 
 function applyManifestUpdateProvider(options: InitAutoUpdaterOptions): void {
+  const currentVersion = getCurrentAppVersionForUpdate();
+
+  // Fork 构建：使用 GitHub Releases 作为更新源，彻底切断官方 manifest 服务端
+  if (currentVersion.includes("-fork")) {
+    autoUpdater.setFeedURL({
+      provider: "github",
+      owner: "My-Search",
+      repo: "ZCode",
+      private: false,
+    });
+    logger.info(`[auto-update] github provider applied for fork build version=${currentVersion}`);
+    return;
+  }
+
+  // 官方构建：保持原有的 ManifestUpdateProvider（连接官方服务端）
   const manifestUrl = options.updateFeedSource?.url.trim();
   autoUpdater.setFeedURL({
     provider: "custom",
