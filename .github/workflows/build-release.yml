@@ -182,7 +182,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq rpm xz-utils libfuse2 2>&1
+          sudo apt-get install -y -qq rpm xz-utils libfuse2 libarchive-tools 2>&1
 
       # ── Toolchain ────────────────────────────────────────
       - uses: pnpm/action-setup@v4
