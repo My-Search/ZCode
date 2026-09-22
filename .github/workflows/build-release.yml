@@ -30,12 +30,14 @@ env:
 
 jobs:
   # ═══════════════════════════════════════════════════════════
-  # 1) Sync: check upstream & merge (schedule) or skip (manual)
+  # 1) Sync: merge upstream only when it actually moved, then
+  #    decide whether HEAD has anything worth releasing.
   # ═══════════════════════════════════════════════════════════
   sync:
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.check.outputs.should_build }}
+      should_build: ${{ steps.decide.outputs.should_build }}
+      build_sha: ${{ steps.decide.outputs.build_sha }}
       version: ${{ steps.patch.outputs.version }}
       release_tag: ${{ steps.patch.outputs.release_tag }}
       build_date: ${{ steps.patch.outputs.build_date }}
@@ -43,49 +45,105 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
           ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Upstream check (schedule trigger) ────────────────
-      - name: Check upstream for new commits
-        id: check
+      # ── 1a. Merge upstream only if it has new commits ────
+      - name: Fetch upstream & detect new commits
+        id: upstream
         run: |
-          # On manual dispatch: skip sync, build from current HEAD
+          # Manual dispatch: never sync, build straight from current HEAD.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual dispatch — skip upstream check, build from current HEAD"
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "current_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch — skipping upstream check"
+            echo "should_sync=false" >> "$GITHUB_OUTPUT"
             echo "upstream_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          git remote add upstream https://github.com/zai-org/zcode.git
-          git fetch upstream --no-tags
+          git remote add upstream https://github.com/zai-org/zcode.git 2>/dev/null \
+            || git remote set-url upstream https://github.com/zai-org/zcode.git
 
-          CURRENT=$(git rev-parse HEAD)
+          if ! git fetch upstream main --no-tags; then
+            echo "::warning::Failed to reach upstream — skipping sync for this run"
+            echo "should_sync=false" >> "$GITHUB_OUTPUT"
+            echo "upstream_sha=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           UPSTREAM=$(git rev-parse upstream/main)
-
-          echo "current_sha=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=${UPSTREAM}" >> "$GITHUB_OUTPUT"
 
-          if [ "$CURRENT" = "$UPSTREAM" ]; then
-            echo "No new upstream commits (both at ${CURRENT:0:12})"
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          # 关键修复：fork 自带提交（workflow、自动更新源等），HEAD 永远不会
+          # 等于 upstream/main，直接比较 SHA 会把“上游无更新”误判成“有更新”，
+          # 导致每次定时都产出新的 fork 版本。
+          # 改用祖先判断：upstream/main 已经是 HEAD 的祖先 → 上游已合并 → 无需同步。
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Upstream ${UPSTREAM:0:12} is already an ancestor of HEAD — nothing to sync"
+            echo "should_sync=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Upstream has new commits: ${CURRENT:0:12} -> ${UPSTREAM:0:12}"
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream ${UPSTREAM:0:12} has new commits — will merge"
+            echo "should_sync=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Merge upstream into fork
-        if: steps.check.outputs.should_build == 'true' && github.event_name == 'schedule'
+        if: steps.upstream.outputs.should_sync == 'true'
         run: |
           git config user.name "ZCode Fork Sync Bot"
           git config user.email "bot@users.noreply.github.com"
-          git merge --no-ff upstream/main \
-            -m "chore: sync upstream $(date -u +%Y-%m-%d)" \
-            -m "Upstream: ${{ steps.check.outputs.upstream_sha }}"
-          git push origin main
 
-      # ── Fork version tag ─────────────────────────────────
+          if git merge --no-ff upstream/main \
+               -m "chore: sync upstream $(date -u +%Y-%m-%d) [skip ci]" \
+               -m "Upstream: ${{ steps.upstream.outputs.upstream_sha }}"; then
+            git push origin main
+            echo "Merged upstream ${{ steps.upstream.outputs.upstream_sha }}"
+          else
+            git merge --abort || true
+            echo "::error::Upstream merge conflict. Resolve it manually, then re-run."
+            echo "## ⚠️ Sync conflict" >> $GITHUB_STEP_SUMMARY
+            echo "Upstream \`${{ steps.upstream.outputs.upstream_sha }}\` conflicts with fork changes." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      # ── 1b. Build only when HEAD has unreleased changes ──
+      - name: Decide whether to build
+        id: decide
+        run: |
+          # 无论后续是否构建，都先把“实际要发布/已发布的提交”告诉下游：
+          # 合并上游后 HEAD 是一个新提交，而 actions/checkout 默认按 github.sha
+          # （触发时的旧提交）检出。不显式传递就会出现“构建旧代码、tag 打旧提交”的
+          # 问题，下一轮立刻又判定为未发布，形成重复构建。
+          BUILD_SHA=$(git rev-parse HEAD)
+          echo "build_sha=${BUILD_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Manual dispatch always builds.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch — forcing build" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          HEAD_TAGS=$(git tag --points-at HEAD)
+
+          # HEAD 上已有 tag → 这个提交已经发布过 → 没有任何变化 → 跳过构建。
+          # 既能在上游未变动时跳过空跑，也能让 fork 自身的提交正常触发构建。
+          {
+            echo "## Build decision"
+            echo ""
+            echo "- HEAD: \`${BUILD_SHA}\`"
+            echo "- Tags at HEAD: \`${HEAD_TAGS:-<none>}\`"
+            echo "- Upstream synced this run: \`${{ steps.upstream.outputs.should_sync }}\`"
+          } >> $GITHUB_STEP_SUMMARY
+
+          if [ -n "$HEAD_TAGS" ]; then
+            echo "HEAD already released (${HEAD_TAGS}) — nothing to build"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "HEAD has unreleased changes — will build"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 1c. Fork version tag ─────────────────────────────
       - name: Compute fork version
         id: patch
         run: |
@@ -97,19 +155,17 @@ jobs:
           echo "release_tag=v${FORK_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build_date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
 
-      # ── Dry-run early exit ─────────────────────────────
       - name: Dry-run mode
         if: github.event.inputs.dry_run == 'true'
         run: |
           echo "# Dry-run mode" >> $GITHUB_STEP_SUMMARY
-          echo "Upstream check would have built from the current HEAD." >> $GITHUB_STEP_SUMMARY
+          echo "Sync checked; build and release skipped." >> $GITHUB_STEP_SUMMARY
 
-      # ── Summary (no new commits) ────────────────────────
-      - name: Summary
-        if: steps.check.outputs.should_build == 'false'
+      - name: Skipped (no changes)
+        if: steps.decide.outputs.should_build == 'false'
         run: |
-          echo "## Sync result" >> $GITHUB_STEP_SUMMARY
-          echo "No new upstream commits — nothing to build." >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "Upstream and fork are unchanged since the last release — no build produced." >> $GITHUB_STEP_SUMMARY
 
   # ═══════════════════════════════════════════════════════════
   # 2) Build matrix (4 platforms in parallel)
@@ -153,7 +209,11 @@ jobs:
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '' }}
 
     steps:
+      # 必须检出 sync 决定发布的那个提交（合并上游之后的新 HEAD），
+      # 而不是 github.sha（本次运行触发时的旧提交）。
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.build_sha }}
 
       # ── macOS: import signing certificate ────────────────
       - name: Import macOS signing certificate
@@ -285,6 +345,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.build_sha }}
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -327,6 +389,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.sync.outputs.release_tag }}
+          target_commitish: ${{ needs.sync.outputs.build_sha }}
           name: ZCode v${{ needs.sync.outputs.version }}
           body_path: _release_body.md
           draft: false
