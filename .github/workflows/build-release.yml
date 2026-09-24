@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       fork_suffix:
-        description: 'Fork build suffix number (default: auto from run number)'
+        description: 'Fork build suffix number (default: highest existing suffix for the official version + 1)'
         type: string
         required: false
       dry_run:
@@ -31,7 +31,8 @@ env:
 jobs:
   # ═══════════════════════════════════════════════════════════
   # 1) Sync: merge upstream only when it actually moved, then
-  #    decide whether HEAD has anything worth releasing.
+  #    decide whether upstream has commits not yet released
+  #    (specs/fork-release-workflow.md is the source of truth).
   # ═══════════════════════════════════════════════════════════
   sync:
     runs-on: ubuntu-latest
@@ -57,6 +58,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "Manual dispatch — skipping upstream check"
             echo "should_sync=false" >> "$GITHUB_OUTPUT"
+            echo "upstream_ok=true" >> "$GITHUB_OUTPUT"
             echo "upstream_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -64,15 +66,19 @@ jobs:
           git remote add upstream https://github.com/zai-org/zcode.git 2>/dev/null \
             || git remote set-url upstream https://github.com/zai-org/zcode.git
 
+          # upstream_ok 供 decide 使用：fetch 失败时无法证明“官方有新提交”，
+          # 本轮必须跳过构建，而不是误判成“有更新”。
           if ! git fetch upstream main --no-tags; then
             echo "::warning::Failed to reach upstream — skipping sync for this run"
             echo "should_sync=false" >> "$GITHUB_OUTPUT"
+            echo "upstream_ok=false" >> "$GITHUB_OUTPUT"
             echo "upstream_sha=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           UPSTREAM=$(git rev-parse upstream/main)
           echo "upstream_sha=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+          echo "upstream_ok=true" >> "$GITHUB_OUTPUT"
 
           # 关键修复：fork 自带提交（workflow、自动更新源等），HEAD 永远不会
           # 等于 upstream/main，直接比较 SHA 会把“上游无更新”误判成“有更新”，
@@ -105,7 +111,7 @@ jobs:
             exit 1
           fi
 
-      # ── 1b. Build only when HEAD has unreleased changes ──
+      # ── 1b. Build only when upstream has unreleased commits ──
       - name: Decide whether to build
         id: decide
         run: |
@@ -123,37 +129,117 @@ jobs:
             exit 0
           fi
 
+          # 上游不可达 → 无法证明“官方有新提交” → 本轮不构建（fetch 步骤已告警）。
+          if [ "${{ steps.upstream.outputs.upstream_ok }}" != "true" ]; then
+            echo "Upstream unreachable — cannot verify official commits, skip build" >> $GITHUB_STEP_SUMMARY
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          UPSTREAM_SHA="${{ steps.upstream.outputs.upstream_sha }}"
           HEAD_TAGS=$(git tag --points-at HEAD)
 
-          # HEAD 上已有 tag → 这个提交已经发布过 → 没有任何变化 → 跳过构建。
-          # 既能在上游未变动时跳过空跑，也能让 fork 自身的提交正常触发构建。
+          # 构建判据：官方仓库是否有「尚未发布」的提交。
+          # upstream/main 已被任一 fork 发布 tag（v*-fork.*）包含 → 这批官方提交
+          # 已经发布过 → 不构建（上游无新提交时的常态，fork 自身提交也不触发发版）；
+          # 未被包含 → 上游有新提交，或上次发布被取消/失败 → 构建（下轮自动补发）。
+          # 旧判据“HEAD 上是否已有 tag”会把 fork 自己的每次提交都当成待发布内容。
+          RELEASED=false
+          for t in $(git tag -l 'v*-fork.*'); do
+            if git merge-base --is-ancestor "$UPSTREAM_SHA" "refs/tags/$t"; then
+              RELEASED=true
+              break
+            fi
+          done
+
           {
             echo "## Build decision"
             echo ""
             echo "- HEAD: \`${BUILD_SHA}\`"
+            echo "- Upstream: \`${UPSTREAM_SHA}\`"
+            echo "- Upstream already released by a fork tag: \`${RELEASED}\`"
             echo "- Tags at HEAD: \`${HEAD_TAGS:-<none>}\`"
             echo "- Upstream synced this run: \`${{ steps.upstream.outputs.should_sync }}\`"
           } >> $GITHUB_STEP_SUMMARY
 
-          if [ -n "$HEAD_TAGS" ]; then
-            echo "HEAD already released (${HEAD_TAGS}) — nothing to build"
+          if [ "$RELEASED" = "true" ]; then
+            echo "Upstream has no new unreleased commits — nothing to build"
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
-            echo "HEAD has unreleased changes — will build"
+            echo "Upstream has unreleased commits — will build"
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
       # ── 1c. Fork version tag ─────────────────────────────
       - name: Compute fork version
         id: patch
+        env:
+          # 输入经 env 注入，避免把可执行内容直接插进 run 脚本。
+          INPUT_FORK_SUFFIX: ${{ github.event.inputs.fork_suffix }}
         run: |
-          BASE_VERSION=$(node -e "console.log(require('./package.json').version)")
-          SUFFIX=${{ github.event.inputs.fork_suffix || github.run_number }}
+          # 官方版本号：上游发版只更新 README 的「更新」区块，从不改根
+          # package.json（open source 至今一直是 3.14.0），直接用 package.json
+          # 会让镜像版本永远停在 3.14.0-fork.N。这里按 README 解析，解析不到
+          # 再回退 package.json 并告警。
+          extract_official_version() {
+            awk '/^## (更新|Updates)[[:space:]]*$/{f=1;next} /^## /{f=0} f' "$1" 2>/dev/null \
+              | grep -oE 'ZCode v[0-9]+\.[0-9]+\.[0-9]+' \
+              | head -n 1 \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true
+          }
+
+          BASE_VERSION=$(extract_official_version README.md)
+          if [ -z "$BASE_VERSION" ]; then
+            BASE_VERSION=$(extract_official_version README.en.md)
+          fi
+          if [ -z "$BASE_VERSION" ]; then
+            BASE_VERSION=$(node -e "console.log(require('./package.json').version)")
+            echo "::warning::Official version not found in README changelog — falling back to package.json (${BASE_VERSION})"
+          fi
+          case "$BASE_VERSION" in
+            ''|*[!0-9.]*)
+              echo "::error::Invalid official version: ${BASE_VERSION}"
+              exit 1
+              ;;
+          esac
+
+          # fork 序号 = 同一官方版本下已发布 tag 的最大序号 + 1，无则从 1 开始。
+          # 官方版本号一变，前缀跟着变、序号自动重置回 1。不再使用
+          # github.run_number：它跨版本单调递增（3.14.3 的首个构建会拿到跳号的
+          # fork.19），且被跳过的运行同样会消耗编号。
+          PREFIX="v${BASE_VERSION}-fork."
+          MAX=0
+          for t in $(git tag -l "${PREFIX}*"); do
+            n="${t#"${PREFIX}"}"
+            case "$n" in
+              ''|*[!0-9]*) continue ;;
+            esac
+            if [ "$n" -gt "$MAX" ]; then
+              MAX=$n
+            fi
+          done
+
+          SUFFIX="${INPUT_FORK_SUFFIX:-$((MAX + 1))}"
+          # 序号必须是纯数字，否则会生成坏掉的 tag / semver，直接失败。
+          case "$SUFFIX" in
+            ''|*[!0-9]*)
+              echo "::error::Invalid fork suffix: ${SUFFIX}"
+              exit 1
+              ;;
+          esac
+
           FORK_VERSION="${BASE_VERSION}-fork.${SUFFIX}"
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           echo "version=${FORK_VERSION}" >> "$GITHUB_OUTPUT"
           echo "release_tag=v${FORK_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build_date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Fork version"
+            echo ""
+            echo "- Official version: \`${BASE_VERSION}\` (from README changelog)"
+            echo "- Highest released suffix for this version: \`${MAX}\`"
+            echo "- Chosen suffix: \`${SUFFIX}\`"
+          } >> $GITHUB_STEP_SUMMARY
 
       - name: Dry-run mode
         if: github.event.inputs.dry_run == 'true'
@@ -165,7 +251,7 @@ jobs:
         if: steps.decide.outputs.should_build == 'false'
         run: |
           echo "## ✅ Skipped" >> $GITHUB_STEP_SUMMARY
-          echo "Upstream and fork are unchanged since the last release — no build produced." >> $GITHUB_STEP_SUMMARY
+          echo "No new unreleased upstream commits — no build produced." >> $GITHUB_STEP_SUMMARY
 
   # ═══════════════════════════════════════════════════════════
   # 2) Build matrix (4 platforms in parallel)
