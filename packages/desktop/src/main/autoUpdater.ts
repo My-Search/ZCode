@@ -193,9 +193,9 @@ type MutableAutoUpdaterForDev = typeof autoUpdater & {
   forceDevUpdateConfig?: boolean;
 };
 
-function isTruthyRuntimeFlag(value: string | undefined): boolean {
+function isFalsyRuntimeFlag(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
+  return normalized === "0" || normalized === "false" || normalized === "no";
 }
 
 function readCommandLineSwitchValue(name: string): string | null {
@@ -212,10 +212,18 @@ function readCommandLineSwitchValue(name: string): string | null {
 }
 
 function isDevAutoUpdateEnabled(): boolean {
-  return (
-    isTruthyRuntimeFlag(process.env[DEV_AUTO_UPDATE_ENV]) ||
-    readCommandLineSwitchValue(DEV_AUTO_UPDATE_SWITCH) !== null
-  );
+  // 产品规则：开发态检查更新默认可用（见 docs/desktop/auto-update-service-manifest.md），
+  // 只有显式关闭开关才回退到旧行为（不初始化更新器、手动检查回执 dev-skipped）。
+  // 离线开发和 E2E 通过 ZCODE_AUTO_UPDATE_DEV=0|false|no 或
+  // --zcode-auto-update-dev=false 关闭。
+  if (isFalsyRuntimeFlag(process.env[DEV_AUTO_UPDATE_ENV])) {
+    return false;
+  }
+  const switchValue = readCommandLineSwitchValue(DEV_AUTO_UPDATE_SWITCH);
+  if (switchValue !== null && isFalsyRuntimeFlag(switchValue)) {
+    return false;
+  }
+  return true;
 }
 
 function canUseAutoUpdaterInCurrentRuntime(): boolean {
@@ -231,10 +239,17 @@ function getCurrentAppVersionForUpdate(): string {
 }
 
 function resolveDevAutoUpdateVersion(): string | null {
-  const configuredVersion =
+  const explicitVersion =
     process.env[DEV_AUTO_UPDATE_VERSION_ENV]?.trim() ||
-    readCommandLineSwitchValue(DEV_AUTO_UPDATE_VERSION_SWITCH)?.trim() ||
-    ZCODE_VERSION;
+    readCommandLineSwitchValue(DEV_AUTO_UPDATE_VERSION_SWITCH)?.trim();
+  // 无显式覆盖时默认 <产品版本>-fork.0：fork Releases 的版本形如 <官方版本>-fork.N，
+  // semver 预发布序保证 N≥1 都比 -fork.0 新；带 -fork 后缀的模拟版本同时会让
+  // applyManifestUpdateProvider 走 GitHub Releases 源，与打包态一致。
+  const configuredVersion =
+    explicitVersion ||
+    (ZCODE_VERSION.includes("-fork")
+      ? ZCODE_VERSION
+      : `${ZCODE_VERSION}-fork.0`);
   const parsed = semver.parse(configuredVersion);
   if (!parsed) {
     logger.warn(`[auto-update] ignore invalid dev update version=${configuredVersion}`);
@@ -846,15 +861,19 @@ async function syncAutoUpdateCheckChannelFromSettings(
 function applyManifestUpdateProvider(options: InitAutoUpdaterOptions): void {
   const currentVersion = getCurrentAppVersionForUpdate();
 
-  // Fork 构建：使用 GitHub Releases 作为更新源，彻底切断官方 manifest 服务端
-  if (currentVersion.includes("-fork")) {
+  // 开发态与 Fork 构建：使用 GitHub Releases 作为更新源，彻底切断官方 manifest 服务端。
+  // 开发态模拟版本默认带 -fork.0 后缀；这里再按 !isPackaged 兜一层，保证即使显式
+  // 覆盖了不带 -fork 的版本号，dev 检查也不会误连官方服务端。
+  if (!app.isPackaged || currentVersion.includes("-fork")) {
     autoUpdater.setFeedURL({
       provider: "github",
       owner: "My-Search",
       repo: "ZCode",
       private: false,
     });
-    logger.info(`[auto-update] github provider applied for fork build version=${currentVersion}`);
+    logger.info(
+      `[auto-update] github provider applied for fork/dev build version=${currentVersion}`,
+    );
     return;
   }
 
@@ -1306,7 +1325,9 @@ async function clearSkippedUpdateVersionForManualCheck(
 
 export function downloadAvailableUpdate(reason = "renderer") {
   if (!canUseAutoUpdaterInCurrentRuntime()) {
-    logger.info(`[auto-update] skip ${reason} download: not packaged`);
+    logger.info(
+      `[auto-update] skip ${reason} download: dev auto update disabled`,
+    );
     return;
   }
 
@@ -1479,7 +1500,7 @@ export function refreshAutoUpdaterReleaseChannel(
   const nextChannel: ElectronReleaseChannel = receivePreviewUpdates ? "preview" : "stable";
 
   if (!canUseAutoUpdaterInCurrentRuntime()) {
-    logger.info(`[auto-update] skip ${reason}: not packaged`);
+    logger.info(`[auto-update] skip ${reason}: dev auto update disabled`);
     return;
   }
 
@@ -1984,7 +2005,7 @@ export function requestForceAutoUpdate(
   onStateChange({ kind: "checking" });
 
   if (!canUseAutoUpdaterInCurrentRuntime()) {
-    const message = "not packaged";
+    const message = "dev auto update disabled";
     logger.info(`[force-update] 自动升级跳过：${message}`);
     onStateChange({ kind: "dev-skipped", message });
     return dispose;
@@ -2044,7 +2065,7 @@ export function requestAutoUpdateCheckWithoutWindow(reason = "force-update") {
   logger.info(`[auto-update] ${reason}: user requested update check without renderer window`);
 
   if (!canUseAutoUpdaterInCurrentRuntime()) {
-    logger.info(`[auto-update] skip ${reason}: not packaged`);
+    logger.info(`[auto-update] skip ${reason}: dev auto update disabled`);
     return;
   }
 
@@ -2098,7 +2119,7 @@ export function checkForUpdateMenuClick(originWindow?: BrowserWindow | null) {
   }
 
   if (!canUseAutoUpdaterInCurrentRuntime()) {
-    logger.info("[auto-update] skip manual check: not packaged");
+    logger.info("[auto-update] skip manual check: dev auto update disabled");
     targetWindow.webContents.send(PlatformChannels.UpdateCheckResult, {
       kind: "dev-skipped",
     } satisfies UpdateCheckResultPayload);

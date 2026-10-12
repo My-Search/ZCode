@@ -243,7 +243,8 @@ describe(`问号菜单应用入口（${expectedFlavor}）`, () => {
       await closeMenu();
       return;
     }
-    // 真实命令只在未打包的隔离 E2E 中执行，避免触发安装包的下载或安装。
+    // 真实命令只在未打包的隔离 E2E 中执行；开发态自动更新默认开启后，
+    // wdio.conf.ts 固定 ZCODE_AUTO_UPDATE_DEV=0 关闭链路，保证回执确定且不请求 GitHub。
     expect(await browser.electron.execute((electron) => electron.app.isPackaged)).toBe(false);
     await browser.execute(() => {
       const target = window as unknown as {
@@ -267,7 +268,7 @@ describe(`问号菜单应用入口（${expectedFlavor}）`, () => {
               (window as unknown as { __helpUpdateResult?: UpdateCheckResultPayload })
                 .__helpUpdateResult?.kind,
           )) === "dev-skipped",
-        { timeout: 10_000, timeoutMsg: "检查更新未收到真实 main 的开发包回执" },
+        { timeout: 10_000, timeoutMsg: "检查更新未收到显式关闭后的 dev-skipped 回执" },
       );
     } finally {
       await browser.execute(() => {

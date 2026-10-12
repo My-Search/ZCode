@@ -185,6 +185,10 @@ const E2E_LOCAL_ENV_FILES = [
 // Bug 根因：Electron 二进制预检曾早于本地 E2E env 加载，缺包修复因此绕过镜像、
 // 代理、证书和缓存配置。所有读取 process.env 的 runner 初始化都必须位于该调用之后。
 loadE2ELocalEnv();
+// 开发态自动更新默认开启后（见 docs/desktop/auto-update-service-manifest.md），
+// E2E 必须显式关闭：帮助菜单"检查更新"用例依赖确定性的 dev-skipped 回执，
+// runner 也不应真实请求 GitHub Releases。需要验证更新链路的用例可显式覆盖该变量。
+process.env["ZCODE_AUTO_UPDATE_DEV"] ??= "0";
 const BUILD_DESKTOP_AGENT_SCRIPT = resolve(REPO_ROOT, "scripts/build-desktop-agent-cli.mjs");
 const ZCODE_CLI_ENTRYPOINT = resolve(REPO_ROOT, "apps/zcode-cli/packages/cli/dist/zcode.cjs");
 const E2E_HOME_DIR = resolve(

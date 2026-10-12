@@ -305,15 +305,52 @@ describe("autoUpdater ready state sync", () => {
     expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);
   });
 
-  it("开发态默认不初始化自动更新", async () => {
+  it("开发态默认启用自动更新并检查 fork GitHub Releases", async () => {
+    // 产品规则：检查更新在开发态默认可用，更新源与打包态一致（fork GitHub Releases）；
+    // 模拟版本默认 <产品版本>-fork.0，使 Releases 的 fork.N（N≥1）可被识别为新版本。
     appMock.isPackaged = false;
 
     const { initAutoUpdater } = await import("../src/main/autoUpdater.js");
     await initAutoUpdater();
 
+    expect(autoUpdaterMock.forceDevUpdateConfig).toBe(true);
+    expect(autoUpdaterMock.currentVersion?.format()).toBe("0.0.0-dev-fork.0");
+    expect(autoUpdaterMock.setFeedURL).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "github",
+        owner: "My-Search",
+        repo: "ZCode",
+      }),
+    );
+    expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  it("ZCODE_AUTO_UPDATE_DEV=0 关闭开发态自动更新并让手动检查回执 dev-skipped", async () => {
+    appMock.isPackaged = false;
+    process.env["ZCODE_AUTO_UPDATE_DEV"] = "0";
+
+    const { initAutoUpdater, checkForUpdateMenuClick } = await import("../src/main/autoUpdater.js");
+    await initAutoUpdater();
+
     expect(autoUpdaterMock.setFeedURL).not.toHaveBeenCalled();
     expect(autoUpdaterMock.checkForUpdates).not.toHaveBeenCalled();
     expect(autoUpdaterMock.forceDevUpdateConfig).toBe(false);
+
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        id: 99,
+        send: vi.fn(),
+      },
+    };
+    checkForUpdateMenuClick(win as never);
+
+    expect(win.webContents.send).toHaveBeenCalledWith(PlatformChannels.UpdateCheckResult, {
+      kind: "dev-skipped",
+    });
+    expect(loggerInfoMock).toHaveBeenCalledWith(
+      "[auto-update] skip manual check: dev auto update disabled",
+    );
   });
 
   it("显式开启开发态自动更新时会覆盖本地版本并发起检查", async () => {
@@ -329,7 +366,7 @@ describe("autoUpdater ready state sync", () => {
     expect(autoUpdaterMock.currentVersion?.format()).toBe("3.3.1");
     expect(autoUpdaterMock.setFeedURL).toHaveBeenCalledWith(
       expect.objectContaining({
-        provider: "custom",
+        provider: "github",
       }),
     );
     expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);

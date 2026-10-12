@@ -115,28 +115,49 @@ skippedElectronUpdateVersions?: Partial<Record<"stable" | "preview", string>>;
 - Windows 从 `quitAndInstall()` 到 NSIS 的进程退出、快捷方式和完成页启动边界见
   `docs/desktop/windows-update-install-handoff.md`。
 
+## Fork 构建与开发态默认行为
+
+本仓库是 zai-org/zcode 的 fork，更新源与官方不同（实现见
+`packages/desktop/src/main/autoUpdater.ts` 的 `applyManifestUpdateProvider` 与
+`isDevAutoUpdateEnabled`）：
+
+- **fork 打包构建**（版本含 `-fork`）：`electron-updater` 使用 GitHub provider，
+  固定检查本仓库 `My-Search/ZCode` 的 Releases；不连接官方 manifest 服务端。
+  本文其余章节描述的 stable / preview、服务端灰度机制只适用于官方构建。
+- **开发态（未打包）默认启用更新检查**：`pnpm dev:desktop` 下点击"检查更新"
+  执行真实检查，与打包态共用同一状态机（发现不自动下载、手动下载、跳过版本、
+  重启安装）。产品规则：
+  - 更新源同 fork 打包构建（GitHub Releases）；`ZCODE_UPDATE_FEED_URL` 的
+    官方 manifest 调试入口在开发态/fork 构建下不生效。
+  - 开发态模拟版本默认取 `<产品版本>-fork.0`（产品版本缺 `-fork` 后缀时自动
+    补 `0`），利用 semver 预发布序使 Releases 上的 `fork.N`（N≥1）都能被识别
+    为新版本；`ZCODE_AUTO_UPDATE_DEV_VERSION` 或
+    `--zcode-auto-update-dev-version` 显式覆盖时以覆盖值为准（不补后缀）。
+  - 关闭开关：`ZCODE_AUTO_UPDATE_DEV=0|false|no` 或
+    `--zcode-auto-update-dev=false`。关闭后开发态回到旧行为：不初始化更新器，
+    手动检查回执 `dev-skipped`（提示"开发环境不检查更新"）。离线开发或 E2E
+    环境用该开关关闭；E2E runner 默认已关闭（见 `packages/desktop/wdio.conf.ts`）。
+  - 开发态的启动检查与 15 分钟 / 2 分钟轮询同样生效，请求 GitHub API 为匿名
+    限额（每 IP 每小时 60 次），高频本地开发可按需关闭。
+
 ## 本地调试启动
 
-本地测试服务端 manifest 自动更新时，先确认发布服务的 manifest 接口可访问，例如：
+开发态更新链路默认开启（见上一节），`pnpm dev:desktop` 启动即会检查
+`My-Search/ZCode` 的 GitHub Releases。想触发"发现更新"，把模拟版本压低即可：
 
 ```bash
-curl "http://intranet.example.invalid:3011/api/v1/releases/electron/manifest?platform=darwin-aarch64&channel=stable&device_mid=00000000-0000-4000-8000-000000000000"
+ZCODE_AUTO_UPDATE_DEV_VERSION=3.3.3 pnpm dev:desktop
 ```
 
-然后在仓库根目录启动桌面端。`ZCODE_UPDATE_FEED_URL` 必须传完整 manifest 接口 URL，客户端会在请求时覆盖 `platform`、`channel`、`device_mid` query 和对应 header；`ZCODE_AUTO_UPDATE_DEV=1` 用于在 dev Electron 内打开更新链路，`ZCODE_AUTO_UPDATE_DEV_VERSION` 用于把本地应用版本压低到服务端版本以下，方便触发“发现更新”：
-
-```bash
-ZCODE_UPDATE_FEED_URL="http://intranet.example.invalid:3011/api/v1/releases/electron/manifest" \
-ZCODE_AUTO_UPDATE_DEV=1 \
-ZCODE_AUTO_UPDATE_DEV_VERSION=3.3.3 \
-pnpm dev:desktop:prod
-```
-
-如果要测试 preview 通道，在设置页打开“抢先体验/preview 更新”后重新检查更新即可；不要把 channel 固定写进 `ZCODE_UPDATE_FEED_URL`，否则容易和 renderer 设置态不一致。
+注意：`ZCODE_AUTO_UPDATE_DEV=1` 不再需要（默认已开启）；本 fork 的开发态固定
+走 GitHub Releases 源，`ZCODE_UPDATE_FEED_URL` 官方 manifest 调试入口只在官方
+构建的代码路径中生效。
 
 ## 验证要求
 
 - 单元测试覆盖 manifest provider 请求参数、stable/preview channel 选择、跳过版本、发现不下载、点击后下载、强制更新仍自动下载。
+- 单元测试覆盖开发态默认启用（GitHub provider、`-fork.0` 模拟版本）与
+  `ZCODE_AUTO_UPDATE_DEV=0` 关闭开关（不初始化、手动检查回执 `dev-skipped`）。
 - CI 配置测试覆盖灰度 `status=3` 与全量 `status=1` 两个 job，上传脚本测试覆盖版本化平台/架构目录以及 stable feed 不再上传。
 - 必须执行 `pnpm typecheck` 和 `pnpm lint`。
 - 若无法在当前环境完成真实安装器升级验证，提交说明中列出待补的打包包体升级验证项。
