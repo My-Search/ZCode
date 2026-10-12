@@ -5,6 +5,11 @@
 # E2E PDF fixture 含规范 xref 尾空格，必须按二进制处理，避免 diff --check 误报。
 packages/desktop/test/e2e/fixtures/fs/**/*.pdf binary
 
+# Gen UI visualize 运行时快照由 manifest.json 的 sha256 逐字节校验
+# （packages/desktop/scripts/gen-ui-runtime-assets.mjs）。Windows 下 core.autocrlf
+# 会把 vendor/*.min.js 转成 CRLF，导致 CI 构建时哈希不匹配而失败，必须按字节保存。
+apps/zcode-cli/packages/visualize-plugin/skills/visualize/assets/** -text -whitespace
+
 # 上游许可原文与生成的声明按字节保存，不能自动转换换行或裁剪空白。
 # 原文中的 License / ======= 是 Markdown 标题，不是合并冲突。
 THIRD-PARTY-NOTICES.md -text -whitespace conflict-marker-size=32 linguist-generated=true
