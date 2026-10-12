@@ -11,7 +11,12 @@ function resolvePnpmCliPath(env) {
   if (
     npmExecPath &&
     (npmExecPath.toLowerCase().includes("\\pnpm\\") ||
-      npmExecPath.toLowerCase().includes("/pnpm/"))
+      npmExecPath.toLowerCase().includes("/pnpm/")) &&
+    // 修复原因：pnpm 独立安装（standalone exe）时 npm_execpath 指向 pnpm.exe，
+    // 其 store 路径仍含 @pnpm\ 段，会命中上面的包含判断；随后用 node 执行 exe
+    // 直接报 "This program cannot be run in DOS mode"。exe 必须直接运行，这里
+    // 只放行 node 可加载的 .js/.cjs 入口，exe 交给下方 shell:true 的 cmd shim 兜底。
+    /\.(?:[cm]?js)$/i.test(npmExecPath)
   ) {
     return npmExecPath;
   }
