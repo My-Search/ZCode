@@ -124,6 +124,10 @@ skippedElectronUpdateVersions?: Partial<Record<"stable" | "preview", string>>;
 - **fork 打包构建**（版本含 `-fork`）：`electron-updater` 使用 GitHub provider，
   固定检查本仓库 `My-Search/ZCode` 的 Releases；不连接官方 manifest 服务端。
   本文其余章节描述的 stable / preview、服务端灰度机制只适用于官方构建。
+  fork 构建与开发态不受构建期自动更新能力开关（`ZCODE_AUTO_UPDATE` /
+  `config/private/build-defaults.json`，见 `docs/desktop/build-time-optional-capabilities.md`）
+  影响：fork 仓库没有内部私有默认配置，若沿用官方判定，安装包会静默退化成
+  "开发环境不检查更新"。
 - **开发态（未打包）默认启用更新检查**：`pnpm dev:desktop` 下点击"检查更新"
   执行真实检查，与打包态共用同一状态机（发现不自动下载、手动下载、跳过版本、
   重启安装）。产品规则：

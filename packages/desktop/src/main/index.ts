@@ -94,6 +94,7 @@ import {
   initAutoUpdater,
   onAutoUpdaterStateChanged,
   refreshAutoUpdaterReleaseChannel,
+  resolveAutoUpdaterInitializationEnabled,
   resolveUpdateFeedSourceFromStartupConfig,
   syncAutoUpdaterStateToWindow,
   syncPostUpdateReleaseNotesToWindow,
@@ -2236,8 +2237,15 @@ app.whenReady().then(async () => {
   // Preview 身份无论连接哪个后端都不自动更新：stable feed 上只分发正式 ZCode 安装包，
   // 不向 Preview 渠道提供更新。构建期未启用自动更新时同样不更新
   // （见 docs/desktop/build-time-optional-capabilities.md）。
+  // 例外：开发态与 fork 构建（版本含 -fork）不受构建期开关影响，始终进入初始化，
+  // 判定集中在 resolveAutoUpdaterInitializationEnabled。
   void initAutoUpdater({
-    enabled: ZCODE_PRODUCT_FLAVOR === "production" && ZCODE_AUTO_UPDATE_ENABLED,
+    enabled: resolveAutoUpdaterInitializationEnabled({
+      isPackaged: app.isPackaged,
+      productFlavor: ZCODE_PRODUCT_FLAVOR,
+      autoUpdateEnabledAtBuild: ZCODE_AUTO_UPDATE_ENABLED,
+      currentVersion: ZCODE_VERSION,
+    }),
     onBeforeQuitAndInstall: async () => {
       notifyStabilityLifecycle("update_install");
       await prepareAppQuit("auto-update quitAndInstall", "update-install");

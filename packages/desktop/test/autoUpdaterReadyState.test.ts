@@ -373,6 +373,74 @@ describe("autoUpdater ready state sync", () => {
     expect(loggerInfoMock).toHaveBeenCalledWith("[auto-update] dev update enabled version=3.3.1");
   });
 
+  describe("resolveAutoUpdaterInitializationEnabled", () => {
+    it("开发态（未打包）始终进入初始化，不受 flavor 与构建期能力开关影响", async () => {
+      const { resolveAutoUpdaterInitializationEnabled } =
+        await import("../src/main/autoUpdater.js");
+
+      expect(
+        resolveAutoUpdaterInitializationEnabled({
+          isPackaged: false,
+          productFlavor: "preview",
+          autoUpdateEnabledAtBuild: false,
+          currentVersion: "3.15.1",
+        }),
+      ).toBe(true);
+    });
+
+    it("fork 打包构建（版本含 -fork）始终启用，缺少构建期能力开关也生效", async () => {
+      // 修复原因：fork 仓库没有官方内部私有默认配置（config/private/build-defaults.json），
+      // 沿用「生产身份 + 构建期开关」判定会让安装包静默退化成"开发环境不检查更新"。
+      const { resolveAutoUpdaterInitializationEnabled } =
+        await import("../src/main/autoUpdater.js");
+
+      expect(
+        resolveAutoUpdaterInitializationEnabled({
+          isPackaged: true,
+          productFlavor: "production",
+          autoUpdateEnabledAtBuild: false,
+          currentVersion: "3.15.1-fork.3",
+        }),
+      ).toBe(true);
+    });
+
+    it("官方生产构建维持「生产身份 + 构建期开关」双条件", async () => {
+      const { resolveAutoUpdaterInitializationEnabled } =
+        await import("../src/main/autoUpdater.js");
+
+      expect(
+        resolveAutoUpdaterInitializationEnabled({
+          isPackaged: true,
+          productFlavor: "production",
+          autoUpdateEnabledAtBuild: true,
+          currentVersion: "3.15.1",
+        }),
+      ).toBe(true);
+      expect(
+        resolveAutoUpdaterInitializationEnabled({
+          isPackaged: true,
+          productFlavor: "production",
+          autoUpdateEnabledAtBuild: false,
+          currentVersion: "3.15.1",
+        }),
+      ).toBe(false);
+    });
+
+    it("Preview 身份打包构建不启用自动更新", async () => {
+      const { resolveAutoUpdaterInitializationEnabled } =
+        await import("../src/main/autoUpdater.js");
+
+      expect(
+        resolveAutoUpdaterInitializationEnabled({
+          isPackaged: true,
+          productFlavor: "preview",
+          autoUpdateEnabledAtBuild: true,
+          currentVersion: "3.15.1",
+        }),
+      ).toBe(false);
+    });
+  });
+
   it("服务端 manifest provider 会按设置选择 stable 或 preview 通道", async () => {
     settingServiceMock.get.mockResolvedValue({
       recentProjects: [],

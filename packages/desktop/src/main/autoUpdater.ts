@@ -18,6 +18,7 @@ import {
   type PostUpdateReleaseNotesPayload,
   type UpdateCheckResultPayload,
   type UpdateStatePayload,
+  type ZCodeProductFlavor,
 } from "@zcode/shared";
 import { logger } from "./logger.js";
 import { ManifestUpdateProvider, getElectronReleasePlatform } from "./manifestUpdateProvider.js";
@@ -228,6 +229,33 @@ function isDevAutoUpdateEnabled(): boolean {
 
 function canUseAutoUpdaterInCurrentRuntime(): boolean {
   return app.isPackaged || isDevAutoUpdateEnabled();
+}
+
+/**
+ * Main 启动时决定是否初始化更新器（`initAutoUpdater` 的 `enabled`）。
+ * 规则见 docs/desktop/build-time-optional-capabilities.md 与
+ * docs/desktop/auto-update-service-manifest.md 的 fork 章节：
+ * - 开发态（未打包）：始终进入初始化，实际行为由运行时规则决定
+ *   （默认可用，`ZCODE_AUTO_UPDATE_DEV=0` 关闭）；
+ * - fork 打包构建（版本含 `-fork`）：始终启用；更新源是 fork 自己的 GitHub Releases，
+ *   不能因为缺少官方内部仓库的构建期私有默认配置而静默退化成不检查更新；
+ * - 官方构建：维持「生产身份 + 构建期能力开关」双条件。
+ */
+export function resolveAutoUpdaterInitializationEnabled(options: {
+  isPackaged: boolean;
+  productFlavor: ZCodeProductFlavor;
+  autoUpdateEnabledAtBuild: boolean;
+  currentVersion: string;
+}): boolean {
+  if (!options.isPackaged) {
+    return true;
+  }
+  if (options.currentVersion.includes("-fork")) {
+    return true;
+  }
+  return (
+    options.productFlavor === "production" && options.autoUpdateEnabledAtBuild
+  );
 }
 
 function shouldRelaunchForDevAutoUpdateInstall(): boolean {
