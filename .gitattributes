@@ -2,8 +2,14 @@
 *.mjs text eol=lf
 *.sh  text eol=lf
 
+# schema baseline 与运行时 dump 逐字节比对；Windows autocrlf 检出成 CRLF 会被
+# db:schema:check 误报为 schema 差异并阻断 pre-push，强制 LF。
+*.baseline.sql text eol=lf
+
 # E2E PDF fixture 含规范 xref 尾空格，必须按二进制处理，避免 diff --check 误报。
 packages/desktop/test/e2e/fixtures/fs/**/*.pdf binary
+# 文档查看器测试 PDF 同理：按字节解析 xref，换行转换会破坏偏移。
+apps/zcode-cli/packages/office-runtime/fixtures/*.pdf binary
 
 # Gen UI visualize 运行时快照由 manifest.json 的 sha256 逐字节校验
 # （packages/desktop/scripts/gen-ui-runtime-assets.mjs）。Windows 下 core.autocrlf
@@ -19,3 +25,6 @@ third-party/runtime/*.txt -text -whitespace
 docs/knip/docs/LICENSE -text -whitespace
 docs/knip/docs/licenses/** -text -whitespace
 third-party/inventory.json linguist-generated=true
+
+# Gen UI vendor 快照带 sha256 清单，构建时逐字节校验；autocrlf 改写换行会误报漂移，按字节保真。
+apps/zcode-cli/packages/visualize-plugin/skills/visualize/assets/vendor/** -text
