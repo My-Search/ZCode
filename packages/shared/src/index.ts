@@ -245,6 +245,7 @@ export type {
   SSHConfigAliasOption,
   TaskNotificationPayload,
   UpdateCheckResultPayload,
+  UpdateCustomMessagePayload,
   UpdateStatePayload,
   WSLDistro,
   WindowControlsOverlayReadyPayload,

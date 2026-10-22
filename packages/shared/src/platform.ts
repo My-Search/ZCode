@@ -39,11 +39,13 @@ import type { BrowserViewportSize } from "./browser-use/command-metadata.js";
 import type {
   PostUpdateReleaseNotesPayload,
   UpdateCheckResultPayload,
+  UpdateCustomMessagePayload,
   UpdateStatePayload,
 } from "./update.js";
 export type {
   PostUpdateReleaseNotesPayload,
   UpdateCheckResultPayload,
+  UpdateCustomMessagePayload,
   UpdateStatePayload,
 } from "./update.js";
 

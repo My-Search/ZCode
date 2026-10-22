@@ -70,6 +70,7 @@ import type {
   TaskNotificationPayload,
   WSLDistro,
   UpdateCheckResultPayload,
+  UpdateCustomMessagePayload,
   UpdateStatePayload,
   DesktopZoomState,
   DesktopWindowChromeState,
@@ -457,6 +458,11 @@ export const PlatformChannels = {
   UpdateCheckResult: "zcode:update-check-result",
   /** Main → Renderer：自动更新持续状态变化（菜单 UI 用） */
   UpdateStateChanged: "zcode:update-state-changed",
+  /**
+   * Main → Renderer：当前构建的基础版本比官方仓库最新发布更新时，通知 renderer
+   * 展示“官方有更新但我们已有更新的自定义构建”的提示。
+   */
+  UpdateCustomMessage: "zcode:update-custom-message",
   /** Renderer → Main：主动获取当前自动更新状态（菜单打开时补偿事件丢失） */
   GetUpdateState: "zcode:get-update-state",
   /** Renderer → Main：开始下载当前已发现的自动更新 */
@@ -1240,6 +1246,10 @@ export interface PlatformChannelMap {
   };
   [PlatformChannels.UpdateStateChanged]: {
     request: UpdateStatePayload;
+    response: void;
+  };
+  [PlatformChannels.UpdateCustomMessage]: {
+    request: UpdateCustomMessagePayload;
     response: void;
   };
   [PlatformChannels.GetUpdateState]: {

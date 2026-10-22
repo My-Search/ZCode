@@ -9,6 +9,16 @@ export interface PostUpdateReleaseNotesPayload {
 }
 
 /**
+ * 当前构建的基础版本比官方仓库最新发布更新时，main 进程回传给 renderer 的提示。
+ * githubVersion 是官方最新基础版本，ourVersion 是当前构建的基础版本。
+ */
+export interface UpdateCustomMessagePayload {
+  githubVersion: string;
+  ourVersion: string;
+  message: string;
+}
+
+/**
  * 用户从菜单手动点击"检查更新"后，main 进程回传给 renderer 的结果。
  * Renderer 根据 kind 展示对应的 toast；不要与启动时的自动 check 混用。
  */

@@ -100,7 +100,9 @@ async function getGithubLatestVersion(): Promise<string | null> {
  * v1.2.3-fork.456 → 1.2.3
  */
 function parseBaseVersion(version: string): string | null {
-  const base = version.split('-')[0].replace(/^v/, '');
+  // 修复原因：split 的结果在 noUncheckedIndexedAccess 下是 string | undefined，
+  // 直接取下标会得到可能为 undefined 的类型，旧代码依赖隐式 any 才通过检查。
+  const base = version.split("-")[0]?.replace(/^v/, "") ?? "";
   return semver.valid(base) || null;
 }
 
