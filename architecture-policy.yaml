@@ -886,3 +886,8 @@ exceptions:
       - packages/ui/src/settings/DynamicWorkflowModeSetting.tsx
       - packages/ui/src/store/dynamicWorkflowAvailabilityStore.ts
     reason: Admitted upstream files edited only to let the user's dynamic workflow mode choice always win and keep the settings row visible; adopting packages/shared/src and packages/ui/src needs a separate module boundary refactor.
+  - id: fork-update-entry-unmanaged-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/ui/src/lib/desktopUpdateMenu.ts
+    reason: Admitted upstream file edited to align the help-menu update entry with the main-process updater gate for fork builds (version containing -fork shows the entry even under the ZCode Preview flavor, specs in docs/desktop/auto-update-service-manifest.md); adopting packages/ui/src needs a separate module boundary refactor.

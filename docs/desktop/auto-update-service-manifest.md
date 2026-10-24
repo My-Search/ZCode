@@ -128,6 +128,13 @@ skippedElectronUpdateVersions?: Partial<Record<"stable" | "preview", string>>;
   `config/private/build-defaults.json`，见 `docs/desktop/build-time-optional-capabilities.md`）
   影响：fork 仓库没有内部私有默认配置，若沿用官方判定，安装包会静默退化成
   "开发环境不检查更新"。
+- **fork 构建与开发态的「检查更新」菜单入口不受产品身份影响**：入口可见性由
+  `packages/ui/src/lib/desktopUpdateMenu.ts` 的 `shouldShowDesktopUpdateEntry`
+  判定，规则与 main 侧 `resolveAutoUpdaterInitializationEnabled` 对齐——
+  版本含 `-fork`（fork 打包构建）或未打包（开发态）时，即使身份是 Preview
+  也显示入口；官方构建维持 `ZCODE_PRODUCT_FLAVOR === "production"` 才显示。
+  背景：fork 为与官方版并排安装切到 `ZCode Preview` 身份后，若入口继续只看
+  身份，更新器（main 侧已启用）会因没有用户入口而不可达。
 - **开发态（未打包）默认启用更新检查**：`pnpm dev:desktop` 下点击"检查更新"
   执行真实检查，与打包态共用同一状态机（发现不自动下载、手动下载、跳过版本、
   重启安装）。产品规则：

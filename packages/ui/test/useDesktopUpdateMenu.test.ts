@@ -8,6 +8,7 @@ import { getUpdateMenuLabelId, getUpdateMenuLabelValues } from "@/lib/desktopUpd
 vi.mock("@zcode/shared", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@zcode/shared")>()),
   ZCODE_PRODUCT_FLAVOR: "production",
+  ZCODE_VERSION: "3.16.2",
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -18,6 +19,18 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 vi.mock("@/hooks/usePlatform.js", () => ({ usePlatform: () => mocks.platform }));
+
+async function importDesktopUpdateMenu(version: string) {
+  // shouldShowDesktopUpdateEntry 的默认参数在 import 时绑定 ZCODE_VERSION，
+  // 用 vi.resetModules + 动态 import 按 fork / 官方版本分别加载模块。
+  vi.resetModules();
+  vi.doMock("@zcode/shared", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@zcode/shared")>()),
+    ZCODE_PRODUCT_FLAVOR: "preview",
+    ZCODE_VERSION: version,
+  }));
+  return await import("@/lib/desktopUpdateMenu.js");
+}
 function createMinimalElement(ownerDocument: Document, tagName = "div") {
   const element = {
     addEventListener: () => {},
@@ -151,5 +164,16 @@ describe("帮助菜单更新状态", () => {
     expect(getUpdateMenuLabelValues(available)).toEqual({ version: "3.13.0" });
     expect(getUpdateMenuLabelId(downloading)).toBe("desktopMenu.help.downloadingUpdateProgress");
     expect(getUpdateMenuLabelValues(downloading)).toEqual({ progress: "42%" });
+  });
+
+  it("入口可见性与 main 侧更新器判定对齐：fork 构建显示，官方 Preview 隐藏", async () => {
+    // fork 包切成 ZCode Preview 身份后入口曾被隐藏，导致更新器无用户入口（fork-2 回归）。
+    const forkBuild = await importDesktopUpdateMenu("3.16.2-fork.2");
+    expect(forkBuild.shouldShowDesktopUpdateEntry("preview", "3.16.2-fork.2")).toBe(true);
+    expect(forkBuild.shouldShowDesktopUpdateEntry("production", "3.16.2-fork.2")).toBe(true);
+
+    const officialBuild = await importDesktopUpdateMenu("3.16.3");
+    expect(officialBuild.shouldShowDesktopUpdateEntry("preview", "3.16.3")).toBe(false);
+    expect(officialBuild.shouldShowDesktopUpdateEntry("production", "3.16.3")).toBe(true);
   });
 });
