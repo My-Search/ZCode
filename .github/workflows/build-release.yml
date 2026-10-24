@@ -3,7 +3,9 @@ name: Sync & Build Release
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/build-release.yml']
+    # 不过滤 paths：fork 自身提交也要进入 decide 判定，否则下述 [force-release]
+    # 标记会在触发层被 paths 拦掉、永远无法生效。无标记且上游无新提交时
+    # 只跑 sync 判定即结束，代价可忽略。
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
@@ -50,8 +52,21 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── 1a-0. [force-release]：HEAD 主题带标记等同手动触发 ──
+      # 放在 upstream fetch 之前：fork 自身改动重打包时无需依赖上游可达。
+      - name: Check force-release marker
+        id: force_release
+        run: |
+          if git log -1 --format=%s HEAD | grep -q "\[force-release\]"; then
+            echo "forced=true" >> "$GITHUB_OUTPUT"
+            echo "[force-release] marker on HEAD — forcing build" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "forced=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # ── 1a. Merge upstream only if it has new commits ────
       - name: Fetch upstream & detect new commits
+        if: steps.force_release.outputs.forced != 'true'
         id: upstream
         run: |
           # Manual dispatch: never sync, build straight from current HEAD.
@@ -131,9 +146,9 @@ jobs:
 
           # [force-release]（specs/fork-release-workflow.md R1）：HEAD 提交主题携带该
           # 标记的 push 等同手动触发，fork 自身改动无需到 Actions UI dispatch 即可重打包。
-          if git log -1 --format=%s HEAD | grep -q "\[force-release\]"; then
+          # 标记判定在 force_release 步骤统一执行（同时决定是否跳过上游 fetch）。
+          if [ "${{ steps.force_release.outputs.forced }}" = "true" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "[force-release] marker on HEAD — forcing build" >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
 

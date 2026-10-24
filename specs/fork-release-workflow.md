@@ -15,15 +15,17 @@
   - 已包含 → 官方这批提交已经发布过 → **不构建**（上游无新提交时的常态）。
   - 未包含 → 上游有新提交（或上一次发布被取消/失败）→ **构建**。
 - 推论：
-  - fork 自身的提交（workflow 修改、文档等）**不触发**自动构建；如需发版用
-    `workflow_dispatch` 手动触发。
+  - fork 自身的提交（文档、代码修复等）**不触发构建**，但会触发一次只跑 sync
+    判定的运行（触发器不过滤 paths；过 paths 会让下述 `[force-release]` 标记
+    在触发层被拦掉、永远无法生效）。如需发版也可 `workflow_dispatch` 手动触发。
   - 合并上游后构建被取消 / 失败时，下一次定时运行仍会因「未发布」而补发，
     不会丢发布。
 - 上游不可达（fetch 失败）时无法证明「官方有新提交」，本轮**跳过构建**并告警。
 - `workflow_dispatch`（手动）**始终构建**，不受门槛限制；`dry_run` 时只做上游检查。
 - push 的 HEAD 提交主题包含 `[force-release]` 时**等同手动触发**：绕过上游发布判据
   与可达性检查直接构建。用于 fork 自身行为改动需要重打包的场景，无需到 Actions UI
-  手动 dispatch。只检查当前 HEAD 主题，不回溯历史提交。
+  手动 dispatch。只检查当前 HEAD 主题，不回溯历史提交。注意该标记依赖 push 运行
+  真实触发，因此触发器不得带 paths 过滤。
 
 ### R2 版本号构成
 
@@ -87,10 +89,12 @@ release tag = v<版本号>       例：v3.14.3-fork.1
 ## 事件顺序
 
 ```
-schedule / push(workflow文件) / workflow_dispatch
+schedule / push(任意文件) / workflow_dispatch
         │
         ▼
 [sync] fetch upstream ──不可达──► 本轮跳过构建(R1) ──► 结束
+        │
+   [force-release] 标记? ──是──► 跳过发布判据，直接构建
         │
    有新提交? ──是──► merge + push origin/main
         │
