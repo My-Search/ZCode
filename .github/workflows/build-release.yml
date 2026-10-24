@@ -288,6 +288,9 @@ jobs:
 
     env:
       ZCODE_ENV: production
+      # 与 ZCODE_ENV 组合后产物使用 ZCode Preview 身份（specs/fork-release-workflow.md R7）：
+      # 独立 appId / 安装目录 / Electron userData，与官方版可并排安装、同时运行。
+      ZCODE_PREVIEW_IDENTITY: '1'
       ZCODE_TARGET_OS: ${{ matrix.target_os }}
       ZCODE_TARGET_ARCH: ${{ matrix.target_arch }}
       ZCODE_SKIP_REMOTE_ASSETS: '1'

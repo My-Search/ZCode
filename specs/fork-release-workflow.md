@@ -66,6 +66,21 @@ release tag = v<版本号>       例：v3.14.3-fork.1
 - 仅当 `upstream/main` 不是 HEAD 祖先时才 merge，冲突则失败并提示手动处理。
 - 合并提交带 `[skip ci]`；`build_sha` 传给下游，保证构建/打 tag 指向合并后的新 HEAD。
 
+### R7 安装包身份：固定 Preview，与官方版并排安装
+
+- build job 的 env 固定 `ZCODE_PREVIEW_IDENTITY=1`，与 `ZCODE_ENV=production` 组合，
+  产物使用 `ZCode Preview` 身份（`packages/desktop/scripts/desktop-product-identity.mjs`）：
+  - Windows：appId / AppUserModelId = `dev.zcode.app.preview`，默认安装目录
+    `...\Program Files\ZCode Preview`；
+  - Linux：包名 / 可执行名 = `zcode-preview`；
+  - 运行时（`packages/desktop/src/main/desktopRuntimeEnv.ts`）：应用名 `ZCode Preview`，
+    Electron userData = `%APPDATA%\ZCode Preview` → 单实例锁按 userData 目录隔离，
+    与官方版可同时安装、同时运行，互不覆盖。
+- 后端环境仍由 `ZCODE_ENV=production` 决定；身份与后端是两个轴，不因 Preview 身份
+  切换后端。更新源判定只看版本号 `-fork` 后缀（`autoUpdater.ts`），与身份无关。
+- 产物文件名随 productName 变为 `ZCode Preview-<version>-<platform>-<arch>.exe|.dmg|.AppImage`，
+  workflow 中 `ZCode*` 上传 glob 仍然命中。
+
 ## 事件顺序
 
 ```
@@ -101,9 +116,12 @@ schedule / push(workflow文件) / workflow_dispatch
 | AC7 | `workflow_dispatch`（含 `fork_suffix`、`dry_run`）          | 始终构建/按 dry_run 跳过；suffix 覆盖生效 |
 | AC8 | 合并后构建失败或被取消，上游无再更新                        | 下轮定时仍检测到「未发布」并补发       |
 | AC9 | fork 自身提交（未合入上游新内容）                          | 定时运行不构建                         |
+| AC10 | 官方版 ZCode 已安装时安装 fork 产物，随后两者同时运行      | 互不覆盖、互不抢单实例锁；卸载互不影响（安装目录 / userData / AUMID 均独立，R7） |
 
 ## 已知边界
 
 - 手动触发会对已发布 HEAD 再次构建（显式 `fork_suffix` 或自动 max+1 得到新序号），
   属于 R1（手动始终构建）与 R4（序号覆盖）允许的行为。
 - 旧 tag `v3.14.0-fork.*` 保留作为历史发布记录，其序号序列不再续用。
+- `zcode://` deep link 协议在官方版与 Preview 身份间仍共用（desktop 侧行为，
+  不属于本工作流），后注册的一方持有协议；OAuth 回调可能落到另一版本。
