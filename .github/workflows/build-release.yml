@@ -129,6 +129,14 @@ jobs:
             exit 0
           fi
 
+          # [force-release]（specs/fork-release-workflow.md R1）：HEAD 提交主题携带该
+          # 标记的 push 等同手动触发，fork 自身改动无需到 Actions UI dispatch 即可重打包。
+          if git log -1 --format=%s HEAD | grep -q "\[force-release\]"; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "[force-release] marker on HEAD — forcing build" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
           # 上游不可达 → 无法证明“官方有新提交” → 本轮不构建（fetch 步骤已告警）。
           if [ "${{ steps.upstream.outputs.upstream_ok }}" != "true" ]; then
             echo "Upstream unreachable — cannot verify official commits, skip build" >> $GITHUB_STEP_SUMMARY

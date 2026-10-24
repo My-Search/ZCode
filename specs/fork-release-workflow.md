@@ -21,6 +21,9 @@
     不会丢发布。
 - 上游不可达（fetch 失败）时无法证明「官方有新提交」，本轮**跳过构建**并告警。
 - `workflow_dispatch`（手动）**始终构建**，不受门槛限制；`dry_run` 时只做上游检查。
+- push 的 HEAD 提交主题包含 `[force-release]` 时**等同手动触发**：绕过上游发布判据
+  与可达性检查直接构建。用于 fork 自身行为改动需要重打包的场景，无需到 Actions UI
+  手动 dispatch。只检查当前 HEAD 主题，不回溯历史提交。
 
 ### R2 版本号构成
 
@@ -117,6 +120,7 @@ schedule / push(workflow文件) / workflow_dispatch
 | AC8 | 合并后构建失败或被取消，上游无再更新                        | 下轮定时仍检测到「未发布」并补发       |
 | AC9 | fork 自身提交（未合入上游新内容）                          | 定时运行不构建                         |
 | AC10 | 官方版 ZCode 已安装时安装 fork 产物，随后两者同时运行      | 互不覆盖、互不抢单实例锁；卸载互不影响（安装目录 / userData / AUMID 均独立，R7） |
+| AC11 | push 提交主题含 `[force-release]`（上游无新提交也成立）    | 始终构建，序号按 R4 取 max+1          |
 
 ## 已知边界
 
