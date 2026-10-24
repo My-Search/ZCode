@@ -8,6 +8,7 @@ const envMock = vi.hoisted(() => ({
   isPackaged: false,
   locale: "en-US",
   preferredSystemLanguages: [] as string[],
+  version: undefined as string | undefined,
 }));
 
 vi.mock("electron", () => ({
@@ -101,6 +102,9 @@ vi.mock("@zcode/shared", () => ({
   // 身份跟随后端环境的旧单轴语义：test → preview，production → production。
   get ZCODE_PRODUCT_FLAVOR() {
     return envMock.value === "production" ? "production" : "preview";
+  },
+  get ZCODE_VERSION() {
+    return envMock.version ?? "3.16.2";
   },
   getDesktopMenuMessage: (_locale: string, id: string) => {
     const enLabels: Record<string, string> = {
@@ -238,6 +242,22 @@ describe("desktopApplicationMenu endpoint submenu", () => {
       executeDesktopCommand: vi.fn(),
     });
     template = buildFromTemplateMock.mock.calls.at(
+      -1,
+    )?.[0] as Electron.MenuItemConstructorOptions[];
+    expect(findMenuItem(template, undefined, "check-for-update")).toBeTruthy();
+  });
+
+  it("fork 构建即使 Preview 身份也显示更新入口（与命令闸门同规则）", async () => {
+    const { rebuildApplicationMenu } = await import("../src/main/desktopApplicationMenu.js");
+
+    // fork-3 回归：Preview 身份的 fork 包入口被隐藏，导致更新器没有用户入口。
+    envMock.value = "test";
+    envMock.version = "3.16.2-fork.3";
+    rebuildApplicationMenu({
+      currentApplicationLocale: "en-US",
+      executeDesktopCommand: vi.fn(),
+    });
+    const template = buildFromTemplateMock.mock.calls.at(
       -1,
     )?.[0] as Electron.MenuItemConstructorOptions[];
     expect(findMenuItem(template, undefined, "check-for-update")).toBeTruthy();

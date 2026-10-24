@@ -129,12 +129,16 @@ skippedElectronUpdateVersions?: Partial<Record<"stable" | "preview", string>>;
   影响：fork 仓库没有内部私有默认配置，若沿用官方判定，安装包会静默退化成
   "开发环境不检查更新"。
 - **fork 构建与开发态的「检查更新」菜单入口不受产品身份影响**：入口可见性由
-  `packages/ui/src/lib/desktopUpdateMenu.ts` 的 `shouldShowDesktopUpdateEntry`
-  判定，规则与 main 侧 `resolveAutoUpdaterInitializationEnabled` 对齐——
-  版本含 `-fork`（fork 打包构建）或未打包（开发态）时，即使身份是 Preview
-  也显示入口；官方构建维持 `ZCODE_PRODUCT_FLAVOR === "production"` 才显示。
-  背景：fork 为与官方版并排安装切到 `ZCode Preview` 身份后，若入口继续只看
-  身份，更新器（main 侧已启用）会因没有用户入口而不可达。
+  `packages/ui/src/lib/desktopUpdateMenu.ts` 的 `shouldShowDesktopUpdateEntry` 判定，
+  托盘（`desktopTray.ts`）与原生应用菜单（`desktopApplicationMenu.ts`）同规则；
+  命令闸门在 `desktopCommandHandlers.ts` 的 `CheckForUpdates` 分支。规则与 main 侧
+  `resolveAutoUpdaterInitializationEnabled` 对齐——版本含 `-fork`（fork 打包构建）
+  或未打包（开发态）时，即使身份是 Preview 也显示入口并放行命令；官方构建维持
+  `ZCODE_PRODUCT_FLAVOR === "production"` 才显示。所有入口判定必须与命令闸门
+  保持同一谓词，否则入口可见但点击被静默吞掉（fork-3 实测回归：渲染层入口已放行，
+  命令闸门仍按身份拦截，日志出现 "Preview 已禁用手动更新检查"）。
+  背景：fork 为与官方版并排安装切到 `ZCode Preview` 身份后，若入口或闸门继续只看
+  身份，更新器（main 侧已启用）会因没有可用用户入口而不可达。
 - **开发态（未打包）默认启用更新检查**：`pnpm dev:desktop` 下点击"检查更新"
   执行真实检查，与打包态共用同一状态机（发现不自动下载、手动下载、跳过版本、
   重启安装）。产品规则：

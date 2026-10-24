@@ -15,6 +15,7 @@ import {
   resolveZCodeEndpointOrigin,
   ZCODE_ENV,
   ZCODE_PRODUCT_FLAVOR,
+  ZCODE_VERSION,
   type AppSettings,
   type DesktopCommandId,
   type Locale,
@@ -593,8 +594,11 @@ export async function executeDesktopCommand(options: {
       );
       return;
     case DesktopCommandIds.CheckForUpdates:
-      // 按产品身份而不是后端环境放行：生产后端的 Preview 同样没有更新器。
-      if (ZCODE_PRODUCT_FLAVOR === "production") {
+      // 与 initAutoUpdater 的 resolveAutoUpdaterInitializationEnabled 同一规则：
+      // fork 构建（版本含 -fork）的更新器已初始化且更新源为 fork 仓库 GitHub Releases，
+      // 必须放行；否则 Preview 身份的 fork 包点击"检查更新"被静默吞掉（fork-3 实测回归）。
+      // 官方 Preview 构建更新器未初始化，仍按身份拦截。
+      if (ZCODE_VERSION.includes("-fork") || ZCODE_PRODUCT_FLAVOR === "production") {
         checkForUpdateMenuClick(targetWindow);
       } else {
         options.logger.info("[auto-update] Preview 已禁用手动更新检查");
