@@ -20,6 +20,7 @@ import { getTargetPlatform } from "./scripts/target-platform.mjs";
 import {
   resolveDesktopArtifactSuffix,
   resolveDesktopProductIdentity,
+  toArtifactProductName,
 } from "./scripts/desktop-product-identity.mjs";
 import { createWindowsPowerShellSecurityArgs } from "./scripts/powershell-command.mjs";
 import { isSharpRequiredByComputerUse, verifyStagedSharp } from "./scripts/sharp-package-assets.mjs";
@@ -246,7 +247,17 @@ const PACKAGING_PRUNE_PATTERNS = [
 
 function buildDesktopArtifactName(platformName, extension = "${ext}") {
   // 测试环境产物必须和正式安装包文件名区分，避免上传、下载或人工验收时混用。
+  // 产品名去空格：Preview 身份是 `ZCode Preview`，文件名带空格会在 GitHub Releases
+  // 存储时变点号、被 electron-updater 请求时变连字符，导致更新包 404 且无限重试。
+  // 只影响文件名，productName 身份不变（应用名/安装目录/AUMID 不受影响）。
   return `\${productName}-\${version}-${platformName}-\${arch}${desktopArtifactEnvSuffix}.${extension}`;
+}
+
+// artifactName 里的 ${productName} 是 electron-builder 宏，无法直接替换；
+// 因此显式传入去空格的字面量产品名，其余宏保持不变。
+function buildDesktopArtifactNameWithoutSpaces(platformName, extension = "${ext}") {
+  const artifactProductName = toArtifactProductName(desktopProductIdentity.productName);
+  return `${artifactProductName}-\${version}-${platformName}-\${arch}${desktopArtifactEnvSuffix}.${extension}`;
 }
 
 function runAsarCommand(args) {
@@ -817,7 +828,7 @@ export default {
   mac: {
     target: ["dmg", "zip"],
     category: "public.app-category.developer-tools",
-    artifactName: buildDesktopArtifactName("mac"),
+    artifactName: buildDesktopArtifactNameWithoutSpaces("mac"),
     extendInfo: {
       NSAppleEventsUsageDescription: `${desktopProductIdentity.productName} needs Apple Events access to coordinate local automation workflows with user-approved desktop apps.`,
       // 缺失该 key 时 macOS 会静默拒绝 CoreBluetooth 枚举，内置浏览器 Web Bluetooth
@@ -853,7 +864,7 @@ export default {
   },
   win: {
     target: ["nsis"],
-    artifactName: buildDesktopArtifactName("win"),
+    artifactName: buildDesktopArtifactNameWithoutSpaces("win"),
     signExts: [".node", ".dll"],
     // Bugfix: Windows CI 之前完全依赖 electron-builder 内置 signtool.exe，
     // 一旦 runner 的证书链路要求改走 vsigntool，打包阶段就会在内置签名环节卡死。
@@ -869,7 +880,7 @@ export default {
   },
   linux: {
     target: ["AppImage", "deb", "rpm", "pacman"],
-    artifactName: buildDesktopArtifactName("linux"),
+    artifactName: buildDesktopArtifactNameWithoutSpaces("linux"),
     // desktop 包名是 scoped package（@zcode/desktop），electron-builder 默认会把
     // Linux executable/Icon 推成 @zcodedesktop。部分桌面环境无法按这个 icon name 命中
     // hicolor 图标，最终回退成系统齿轮。这里固定成稳定的小写名称，让 Icon=zcode
@@ -889,7 +900,7 @@ export default {
     // 陈旧默认集合，避免安装阶段因已移除包名直接失败。
     depends: PACMAN_RUNTIME_DEPENDENCIES,
     // Electron Builder 默认把 pacman target 命名为 .pacman；Arch 原生包的标准扩展名是 .pkg.tar.zst。
-    artifactName: buildDesktopArtifactName("linux", "pkg.tar.zst"),
+    artifactName: buildDesktopArtifactNameWithoutSpaces("linux", "pkg.tar.zst"),
   },
   rpm: {
     // 与 deb 同一约束：生产版与 Preview 必须是两个独立 rpm 包，否则 dnf 会把另一 flavor 当成升级替换。

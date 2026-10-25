@@ -22,6 +22,34 @@ Electron 自动更新弹窗需要支持用户选择“以后自动下载并安�
 - 独立更新窗口通过窄平台接口读写自动更新偏好，不暴露完整 setting service。
 - 重启前任务检查复用现有 `IPlatformService.getDesktopSessionActivity()`，避免 UI 层直接读取任务 store 或跨层访问服务实现。
 
+## 下载失败重试
+
+下载失败（Promise reject 或 `error` 事件）不立即重查，按下表退避后重试：
+
+| 连续失败次数 | 下次重试延迟 |
+| --- | --- |
+| 1 | 1 分钟 |
+| 2 | 2 分钟 |
+| 3 | 5 分钟 |
+| 4 | 15 分钟 |
+| 5 | 30 分钟 |
+| 6 及以上 | 停止自动重查 |
+
+- 用尽阶梯后保留 `update-available` 状态，由既有轮询（有可用更新 2 分钟 / 否则 15
+  分钟）或用户手动检查恢复；手动检查会清零退避计数并立即重试。
+- 下载成功或收到 `update-not-available` 表示链路已恢复，退避计数与待执行定时器清零。
+- 设计原因：早期实现失败后立即重查，会「检出同一版本 → 自动下载 → 再失败 → 再重查」，
+  实测 2~3 秒一轮无限循环，持续打网络并让日志爆量。
+
+## 安装包文件名
+
+`artifactName` 使用不含空格的产品名（`ZCode-Preview-<version>-...`），
+`productName`（应用显示名、安装目录、AUMID、userData）保持 `ZCode Preview` 不变。
+
+- 设计原因：GitHub Releases 会把资产名里的空格存成点号（`ZCode.Preview-...`），
+  而 `electron-updater` 拼下载 URL 时把空格换成连字符（`ZCode-Preview-...`），
+  三方命名不一致会让所有更新包 404，并叠加无限重试。
+
 ## 验证
 
 - 单测覆盖：

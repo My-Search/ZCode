@@ -1426,10 +1426,15 @@ describe("autoUpdater ready state sync", () => {
     });
     expect(menuItem.enabled).toBe(true);
     await Promise.resolve();
-    expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(2);
+    // Bugfix: 下载失败改为退避重查（1 分钟起阶梯），不能立即重查——否则
+    // 「失败 → 重查 → 再失败」会无限循环。这里断言没有立即发起第二次检查。
+    expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(loggerInfoMock).toHaveBeenCalledWith(
+      expect.stringContaining("download failed 1/5, retry in 1min"),
+    );
   });
 
-  it("下载失败发生在检查收口前时，收口后再查一次", async () => {
+  it("下载失败发生在检查收口前时，收口后按退避重查而非立即重查", async () => {
     let releaseCheck: (() => void) | undefined;
     autoUpdaterMock.checkForUpdates.mockImplementationOnce(
       () =>
@@ -1455,7 +1460,11 @@ describe("autoUpdater ready state sync", () => {
     releaseCheck?.();
     await Promise.resolve();
     await Promise.resolve();
-    expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(2);
+    // Bugfix: 收口后只安排退避定时器，不再立即重查（原实现会立刻再查，形成死循环）。
+    expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(loggerInfoMock).toHaveBeenCalledWith(
+      expect.stringContaining("download failed 1/5, retry in 1min"),
+    );
   });
 
   it("跳过当前版本会按 stable 通道持久化并清空 available 状态", async () => {
@@ -2759,6 +2768,20 @@ describe("autoUpdater ready state sync", () => {
       kind: "idle",
       enabled: true,
     });
+  });
+
+  it("下载失败按退避阶梯重查，用尽后停止自动重试", async () => {
+    // Bug 原因：原实现下载失败立即重查，会「检出同一版本 → 自动下载 → 再失败 →
+    // 再重查」，实测 2~3 秒一轮无限循环。阶梯与上限由纯函数判定，直接验证。
+    const { resolveDownloadFailureRetryDelayMs } = await import("../src/main/autoUpdater.js");
+    const minutes = [1, 2, 5, 15, 30];
+    expect(minutes.map((m) => resolveDownloadFailureRetryDelayMs(minutes.indexOf(m)))).toEqual(
+      minutes.map((m) => m * 60 * 1000),
+    );
+    // 阶梯用尽后返回 null：调用方据此停止自动重查，交回轮询/手动检查。
+    expect(resolveDownloadFailureRetryDelayMs(minutes.length)).toBeNull();
+    expect(resolveDownloadFailureRetryDelayMs(99)).toBeNull();
+    expect(resolveDownloadFailureRetryDelayMs(-1)).toBeNull();
   });
 
   it("强制升级自动更新复用检查时，无可用更新会反馈错误状态", async () => {

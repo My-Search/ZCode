@@ -88,6 +88,10 @@ release tag = v<版本号>       例：v3.14.3-fork.1
   切换后端。更新源判定只看版本号 `-fork` 后缀（`autoUpdater.ts`），与身份无关。
 - 产物文件名随 productName 变为 `ZCode Preview-<version>-<platform>-<arch>.exe|.dmg|.AppImage`，
   workflow 中 `ZCode*` 上传 glob 仍然命中。
+  - 例外：`artifactName` 里的产品名去空格，实际文件名为
+    `ZCode-Preview-<version>-<platform>-<arch>...`（`productName` 仍是 `ZCode Preview`）。
+    原因：GitHub Releases 把资产名的空格存成点号、`electron-updater` 请求时换成连字符，
+    带空格会导致所有更新包 404（见 `docs/desktop/auto-update-auto-download-install.md`）。
 
 ## 事件顺序
 

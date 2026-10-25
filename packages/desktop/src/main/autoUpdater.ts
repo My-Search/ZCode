@@ -26,6 +26,26 @@ import { ManifestUpdateProvider, getElectronReleasePlatform } from "./manifestUp
 export const CHECK_FOR_UPDATE_MENU_ID = "check-for-update";
 const AUTO_UPDATE_POLL_INTERVAL_MS = 15 * 60 * 1000;
 const AUTO_UPDATE_VISIBLE_POLL_INTERVAL_MS = 2 * 60 * 1000;
+// 下载失败后的重查退避阶梯。修复原因：原实现下载失败后立即重查，会检出同一
+// 版本 → 自动下载 → 再失败 → 再重查，实测 2~3 秒一轮无限循环（日志爆量、持续
+// 打网络）。改为按阶梯退避；用尽后停止自动重查，交回正常轮询或用户手动检查，
+// 任意一次检查成功即清零。
+const DOWNLOAD_FAILURE_RETRY_DELAYS_MS = [
+  1 * 60 * 1000,
+  2 * 60 * 1000,
+  5 * 60 * 1000,
+  15 * 60 * 1000,
+  30 * 60 * 1000,
+];
+
+/**
+ * 第 `failureCount` 次连续失败后应等待的延迟；阶梯用尽返回 null（停止自动重查）。
+ * 抽成纯函数便于单测直接验证阶梯与上限，不依赖定时器与完整启动链路。
+ */
+export function resolveDownloadFailureRetryDelayMs(failureCount: number): number | null {
+  if (!Number.isInteger(failureCount) || failureCount < 0) return null;
+  return DOWNLOAD_FAILURE_RETRY_DELAYS_MS[failureCount] ?? null;
+}
 const UPDATE_FEED_URL_ENV = "ZCODE_UPDATE_FEED_URL";
 const UPDATE_FEED_URL_SWITCH = "--zcode-update-feed-url";
 const DEV_AUTO_UPDATE_ENV = "ZCODE_AUTO_UPDATE_DEV";
@@ -206,6 +226,47 @@ function recoverFromFailedUpdateInstall(): void {
 let devAutoUpdateVersionOverride: string | null = null;
 let recheckAfterDownload: ((reason: string) => void) | null = null;
 let pendingFailedDownloadRecheck = false;
+// 下载失败退避：已连续失败次数（决定使用哪一级延迟）与待执行的退避定时器。
+let downloadFailureCount = 0;
+let downloadFailureRetryTimer: NodeJS.Timeout | null = null;
+
+function clearDownloadFailureRetry(): void {
+  if (downloadFailureRetryTimer) {
+    clearTimeout(downloadFailureRetryTimer);
+    downloadFailureRetryTimer = null;
+  }
+}
+
+/** 任意一次检查成功（有更新/无更新都算）说明链路已恢复，退避状态清零。 */
+function resetDownloadFailureBackoff(): void {
+  downloadFailureCount = 0;
+  clearDownloadFailureRetry();
+}
+
+/**
+ * 下载失败后的重查调度：按 DOWNLOAD_FAILURE_RETRY_DELAYS_MS 阶梯退避。
+ * 用尽阶梯后停止自动重查（保留 update-available 状态，由正常轮询或用户
+ * 手动检查恢复），避免失败 → 重查 → 再失败的无限循环。
+ */
+function scheduleDownloadFailureRecheck(): void {
+  clearDownloadFailureRetry();
+  const delay = resolveDownloadFailureRetryDelayMs(downloadFailureCount);
+  if (delay === null) {
+    logger.warn(
+      `[auto-update] download failed ${downloadFailureCount} times, stop auto retry until next poll or manual check`,
+    );
+    return;
+  }
+  downloadFailureCount += 1;
+  logger.info(
+    `[auto-update] download failed ${downloadFailureCount}/${DOWNLOAD_FAILURE_RETRY_DELAYS_MS.length}, retry in ${Math.round(delay / 60000)}min`,
+  );
+  downloadFailureRetryTimer = setTimeout(() => {
+    downloadFailureRetryTimer = null;
+    recheckAfterDownload?.("download-retry");
+  }, delay);
+  downloadFailureRetryTimer.unref?.();
+}
 
 type MutableAutoUpdaterForDev = typeof autoUpdater & {
   currentVersion?: semver.SemVer;
@@ -409,8 +470,9 @@ function completeAutoUpdateCheck(reason: string, checkId: number | null): void {
   const shouldRecheckFailedDownload = pendingFailedDownloadRecheck;
   pendingFailedDownloadRecheck = false;
   if (shouldRecheckFailedDownload && !pendingChannel && !activeForceAutoUpdateListener) {
-    // 下载失败发生在本次检查收口前。等标记清掉后再查一次，避免复查被进行中的检查直接丢掉。
-    queueMicrotask(() => recheckAfterDownload?.("download-failed"));
+    // 下载失败发生在本次检查收口前。等标记清掉后再查，避免复查被进行中的检查丢掉；
+    // 必须走退避，不能立即重查（否则失败→重查→再失败会无限循环）。
+    scheduleDownloadFailureRecheck();
   }
   if (!pendingChannel) {
     return;
@@ -1255,10 +1317,9 @@ function handleAutoUpdateFailure(error: unknown, source: string) {
   notifyForceAutoUpdate({ kind: "error", message });
   sendManualCheckResult({ kind: "error", message });
   // 下载失败也是一次下载结束，无论来自 Promise reject 还是 error 事件。
-  // 没有强制更新在进行时立即复查，避免弱网失败期间错过更高版本。
-  // 失败可能发生在启动检查的结果处理里，记下原因，等这次检查收口后再查。
+  // 按退避阶梯安排重查：失败即重查会检出同一版本 → 再下载 → 再失败，形成死循环。
   if (failedDownload && !activeForceAutoUpdateListener) {
-    recheckAfterDownload?.("download-failed");
+    scheduleDownloadFailureRecheck();
   }
   if (failedInstall) recoverFromFailedUpdateInstall();
 }
@@ -1393,6 +1454,8 @@ async function clearSkippedUpdateVersionForManualCheck(
 }
 
 function publishDownloadedUpdate(info: UpdateDownloadedInfoLike): void {
+  // 下载成功即链路恢复：清掉退避计数与待执行的退避重查。
+  resetDownloadFailureBackoff();
   readyUpdateVersion = info.version;
   readyUpdateRestoredFromPendingReleaseNotes = false;
   readyUpdateChannel = downloadingUpdateChannel ?? availableUpdateChannel;
@@ -1757,6 +1820,8 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
     clearInterval(autoUpdatePollTimer);
     autoUpdatePollTimer = null;
   }
+  // 重新初始化时清掉上一次的下载失败退避定时器与计数。
+  resetDownloadFailureBackoff();
   checkForUpdatesInFlight = false;
   activeAutoUpdateCheckId = null;
   activeAutoUpdateCheckChannel = null;
@@ -1949,6 +2014,8 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
       logger.info(
         `[auto-update] already up to date (local=${getCurrentAppVersionForUpdate()}, remote=${info.version})`,
       );
+      // 确认无更新说明检查链路正常，清掉历史下载失败的退避状态。
+      resetDownloadFailureBackoff();
       if (readyUpdateVersion && isReadyUpdateCurrentTarget()) {
         setAutoUpdaterMenuState(buildUpdateDownloadedState(readyUpdateVersion));
         sendManualCheckResult({ kind: "ready", version: readyUpdateVersion });
@@ -2230,6 +2297,8 @@ export function requestAutoUpdateCheckWithoutWindow(reason = "force-update") {
 export function checkForUpdateMenuClick(originWindow?: BrowserWindow | null) {
   if (quitAndInstallState !== "idle") return;
   logger.info("[auto-update] user clicked Check for Updates");
+  // 用户主动检查应立即重试：清掉下载失败退避，不受自动退避阶梯限制。
+  resetDownloadFailureBackoff();
 
   const targetWindow =
     originWindow && !originWindow.isDestroyed()

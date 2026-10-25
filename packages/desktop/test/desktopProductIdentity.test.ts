@@ -9,6 +9,7 @@ import {
   resolveWindowsAppUserModelId,
   resolveWindowsAppUserModelIdForFlavor,
   resolveDesktopProductIdentity,
+  toArtifactProductName,
 } from "../scripts/desktop-product-identity.mjs";
 
 describe("desktop product identity", () => {
@@ -72,6 +73,18 @@ describe("desktop product identity", () => {
       resolveDesktopArtifactSuffix({ ZCODE_ENV: "production", ZCODE_PREVIEW_IDENTITY: "1" }),
     ).toBe("");
     expect(resolveDesktopArtifactSuffix({})).toBe("_TEST");
+  });
+
+  it("产物文件名里的产品名不含空格，身份里的 productName 保持不变", () => {
+    // Bug 原因：GitHub Releases 把资产名的空格存成点号，electron-updater 请求时
+    // 换成连字符，带空格的 Preview 产物导致所有更新包 404 并无限重试。
+    expect(toArtifactProductName("ZCode Preview")).toBe("ZCode-Preview");
+    expect(toArtifactProductName("ZCode")).toBe("ZCode");
+    expect(toArtifactProductName("  ZCode   Preview  ")).toBe("ZCode-Preview");
+    // 身份本身（应用名/安装目录/AUMID/userData）必须继续带空格。
+    expect(resolveDesktopProductIdentity({ ZCODE_ENV: "test" }).productName).toBe(
+      "ZCode Preview",
+    );
   });
 
   it("ZCODE_ENV=production 完整保留正式包身份", () => {

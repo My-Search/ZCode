@@ -28,6 +28,18 @@ export const desktopProductIdentities = Object.freeze({
   preview: PREVIEW_IDENTITY,
 });
 
+/**
+ * 安装包文件名里使用的产品名：不含空格。
+ *
+ * 修复原因：`ZCode Preview` 带空格，GitHub Releases 会把资产名里的空格存成点号
+ * （`ZCode.Preview-...`），而 electron-updater 拼下载 URL 时把空格换成连字符
+ * （`ZCode-Preview-...`），两边永远对不上，所有更新包 404 并触发无限重试。
+ * 只规范化文件名：productName（应用显示名、安装目录、AUMID、userData）保持不变。
+ */
+export function toArtifactProductName(productName) {
+  return productName.trim().replace(/\s+/g, "-");
+}
+
 function normalizeDesktopZCodeEnv(env) {
   return env.ZCODE_ENV?.trim().toLowerCase() === "production" ? "production" : "test";
 }
