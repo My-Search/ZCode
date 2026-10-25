@@ -52,17 +52,29 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 1a-0. [force-release]：HEAD 主题带标记等同手动触发 ──
+      # ── 1a-0. [force-release]：push 时 HEAD 主题带标记等同手动触发 ──
       # 放在 upstream fetch 之前：fork 自身改动重打包时无需依赖上游可达。
+      # 只对 push 生效：标记是提交主题的永久属性，schedule 若也认它会在该提交上
+      # 每 6 小时重复构建（fork.5/.6/.7 就是同一提交的重复产物）。
+      # 再要求 HEAD 尚无 fork tag：同一提交重复推送不重复发版。
       - name: Check force-release marker
         id: force_release
         run: |
-          if git log -1 --format=%s HEAD | grep -q "\[force-release\]"; then
-            echo "forced=true" >> "$GITHUB_OUTPUT"
-            echo "[force-release] marker on HEAD — forcing build" >> $GITHUB_STEP_SUMMARY
-          else
+          if [ "${{ github.event_name }}" != "push" ]; then
             echo "forced=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          if ! git log -1 --format=%s HEAD | grep -q "\[force-release\]"; then
+            echo "forced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$(git tag --points-at HEAD -l 'v*-fork.*')" ]; then
+            echo "forced=false" >> "$GITHUB_OUTPUT"
+            echo "[force-release] already released at HEAD — skip repeat build" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          echo "forced=true" >> "$GITHUB_OUTPUT"
+          echo "[force-release] marker on HEAD — forcing build" >> $GITHUB_STEP_SUMMARY
 
       # ── 1a. Merge upstream only if it has new commits ────
       - name: Fetch upstream & detect new commits

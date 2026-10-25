@@ -24,8 +24,11 @@
 - `workflow_dispatch`（手动）**始终构建**，不受门槛限制；`dry_run` 时只做上游检查。
 - push 的 HEAD 提交主题包含 `[force-release]` 时**等同手动触发**：绕过上游发布判据
   与可达性检查直接构建。用于 fork 自身行为改动需要重打包的场景，无需到 Actions UI
-  手动 dispatch。只检查当前 HEAD 主题，不回溯历史提交。注意该标记依赖 push 运行
-  真实触发，因此触发器不得带 paths 过滤。
+  手动 dispatch。注意该标记依赖 push 运行真实触发，因此触发器不得带 paths 过滤。
+- **`[force-release]` 只在 push 事件生效**，且 HEAD 已有 `v*-fork.*` tag 时不构建：
+  该标记是提交主题的永久属性，若 schedule 也认它，同一提交会在每个定时轮次重复
+  构建并发布新序号（实测 fork.4/.5/.6/.7 指向同一提交 `58ffb68a`）。「官方无更新
+  即跳过」是硬约束，任何触发方式都不得绕过该判据产生重复产物。
 
 ### R2 版本号构成
 
@@ -125,6 +128,8 @@ schedule / push(任意文件) / workflow_dispatch
 | AC9 | fork 自身提交（未合入上游新内容）                          | 定时运行不构建                         |
 | AC10 | 官方版 ZCode 已安装时安装 fork 产物，随后两者同时运行      | 互不覆盖、互不抢单实例锁；卸载互不影响（安装目录 / userData / AUMID 均独立，R7） |
 | AC11 | push 提交主题含 `[force-release]`（上游无新提交也成立）    | 始终构建，序号按 R4 取 max+1          |
+| AC12 | HEAD 主题含 `[force-release]` 的提交已发布后，定时运行      | 不构建（标记不对 schedule 生效，R1）   |
+| AC13 | 同一提交已带 `v*-fork.*` tag 后再次 push（如 amend 重推）  | 不构建，summary 说明已发布             |
 
 ## 已知边界
 
