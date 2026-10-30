@@ -7,6 +7,7 @@ const { autoUpdater } = pkg;
 import {
   DEFAULT_LOCALE,
   DEFAULT_ZCODE_ENDPOINT_ORIGIN,
+  TEST_ZCODE_ENDPOINT_ORIGIN,
   PlatformChannels,
   ZCODE_VERSION,
   desktopMenuMessageIds,
@@ -21,6 +22,7 @@ import {
   type ZCodeProductFlavor,
 } from "@zcode/shared";
 import { logger } from "./logger.js";
+import { verifyWindowsAuthenticodeSignature } from "../../scripts/powershell-command.mjs";
 import { ManifestUpdateProvider, getElectronReleasePlatform } from "./manifestUpdateProvider.js";
 
 export const CHECK_FOR_UPDATE_MENU_ID = "check-for-update";
@@ -654,6 +656,22 @@ async function quitAndInstallUpdate(rejectUnavailable = false) {
   // 也不能让一次挂起的后台网络请求扣押用户已经选择的安装。
   quitAndInstallState = "preparing";
   logger.info("[auto-update] user requested quit and install");
+  if (process.platform === "win32" && app.isPackaged) {
+    try {
+      // 6.8.10 命中已下载缓存时跳过下载 hook；在退出服务前复查实际待安装文件。
+      // 读取既有 updater 的安装路径，避免另存一份路径导致 ready 与安装目标不同步。
+      const installerPath = (autoUpdater as unknown as { readonly installerPath: string | null })
+        .installerPath;
+      if (!installerPath) throw new Error("Windows update installer is missing");
+      const failure = await verifyWindowsAuthenticodeSignature(installerPath);
+      if (failure) throw new Error(failure);
+    } catch (error) {
+      quitAndInstallState = "idle";
+      handleAutoUpdateFailure(error, "Windows update signature verification failed");
+      if (rejectUnavailable) throw error;
+      return;
+    }
+  }
   // macOS 上 quitAndInstall() 在关窗前不会先走 app.before-quit。
   // 如果仍然只靠 before-quit 去放行窗口 close，现有的“红绿灯关闭=隐藏窗口”逻辑会把退出拦住，
   // 表现成点击更新后界面消失但进程没退、安装流程也不再继续。
@@ -911,6 +929,8 @@ function readSwitchValue(argv: readonly string[], switchName: string): string | 
   const equalsPrefix = `${switchName}=`;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    // 协议注册使用 -- 分隔外部 URL；其后的内容不能重新解释为应用开关。
+    if (arg === "--") break;
     if (!arg) {
       continue;
     }
@@ -934,6 +954,9 @@ export function resolveUpdateFeedSourceFromStartupConfig(
     env?: Record<string, string | undefined>;
   } = {},
 ): RuntimeUpdateFeedSource | undefined {
+  // Windows 深链中的引号可拆出额外 argv。正式包必须忽略调试更新源，
+  // 不能让不可信启动参数（或继承的环境变量）接管安装包下载来源。
+  if (app.isPackaged) return undefined;
   const argv = options.argv ?? process.argv;
   const env = options.env ?? process.env;
   const feedUrl = readSwitchValue(argv, UPDATE_FEED_URL_SWITCH) ?? env[UPDATE_FEED_URL_ENV]?.trim();
@@ -982,7 +1005,7 @@ async function syncAutoUpdateCheckChannelFromSettings(
 }
 
 function applyManifestUpdateProvider(options: InitAutoUpdaterOptions): void {
-  const currentVersion = getCurrentAppVersionForUpdate();
+const currentVersion = getCurrentAppVersionForUpdate();
 
   // 开发态与 Fork 构建：使用 GitHub Releases 作为更新源，彻底切断官方 manifest 服务端。
   // 开发态模拟版本默认带 -fork.0 后缀；这里再按 !isPackaged 兜一层，保证即使显式
@@ -1000,8 +1023,9 @@ function applyManifestUpdateProvider(options: InitAutoUpdaterOptions): void {
     return;
   }
 
-  // 官方构建：保持原有的 ManifestUpdateProvider（连接官方服务端）
-  const manifestUrl = options.updateFeedSource?.url.trim();
+  // 官方构建：保持原有的 ManifestUpdateProvider（连接官方服务端）。
+  // 在更新器装配边界再次约束，避免内部调用绕过启动配置解析。
+  const manifestUrl = app.isPackaged ? undefined : options.updateFeedSource?.url.trim();
   autoUpdater.setFeedURL({
     provider: "custom",
     updateProvider: ManifestUpdateProvider,
@@ -1009,8 +1033,20 @@ function applyManifestUpdateProvider(options: InitAutoUpdaterOptions): void {
     ...(manifestUrl ? { manifestUrl } : {}),
     releasePlatform: getElectronReleasePlatform(),
     deviceMid: options.deviceMid,
-    resolveEndpointOrigin:
-      options.resolveEndpointOrigin ?? (() => resolveRuntimeZCodeEndpointOrigin(process.env)),
+    resolveEndpointOrigin: async () => {
+      const origin = await (
+        options.resolveEndpointOrigin ?? (() => resolveRuntimeZCodeEndpointOrigin(process.env))
+      )();
+      // 通用后端覆盖不是更新发布授权；正式包只允许既有官方 HTTPS 入口。
+      if (
+        app.isPackaged &&
+        origin !== DEFAULT_ZCODE_ENDPOINT_ORIGIN &&
+        origin !== TEST_ZCODE_ENDPOINT_ORIGIN
+      ) {
+        return DEFAULT_ZCODE_ENDPOINT_ORIGIN;
+      }
+      return origin;
+    },
     resolveReleaseChannel: async () => {
       const channel = await resolveUpdateReleaseChannel(options.settingService);
       if (!isUpdateTargetLocked()) availableUpdateChannel = channel;
@@ -1844,6 +1880,11 @@ export async function initAutoUpdater(options: InitAutoUpdaterOptions = {}): Pro
   // 由 before-quit 主动安装，避免目标已经升高后退出装上旧包。
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.logger = logger;
+  if (autoUpdater instanceof pkg.NsisUpdater) {
+    // 保留包内 publisherName 来激活 NSIS hook，但不把旧 DN 当作未来换证的准入条件。
+    autoUpdater.verifyUpdateCodeSignature = (_publisherNames, filePath) =>
+      verifyWindowsAuthenticodeSignature(filePath);
+  }
   applyManifestUpdateProvider(options);
 
   const triggerCheckForUpdates = (reason: string) => {
