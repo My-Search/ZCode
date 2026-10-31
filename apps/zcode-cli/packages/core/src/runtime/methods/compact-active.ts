@@ -44,7 +44,6 @@ import {
   isModelMediaTooLargeError,
   logMediaBudgetProjection,
   logMediaCapabilityProjection,
-  truncateCompactSummaryRequestEntriesAfterPromptTooLong,
   projectCompactMediaForRetry,
   projectMessagesForModelMediaPolicy,
   logCompactMediaRetryProjection,
@@ -306,25 +305,6 @@ async function compactActiveConversationImpl(
         entriesToSummarize = getRuntimeEntriesToSummarize(entriesForSummary);
         return true;
       };
-      const truncateEntriesAfterPromptTooLong = (cause: unknown): boolean => {
-        if (!canUseCompactSummaryTruncationFallback(trigger)) return false;
-
-        const truncated = truncateCompactSummaryRequestEntriesAfterPromptTooLong({
-          attempt: compactPromptTooLongAttempts,
-          cause,
-          entriesForSummary,
-          logger: this.logger,
-          traceContext: modelTraceContext,
-          useMidConversationSystem,
-        });
-        if (!truncated) return false;
-
-        compactPromptTooLongAttempts += 1;
-        entriesForSummary = truncated;
-        entriesToSummarize = getRuntimeEntriesToSummarize(entriesForSummary);
-        return true;
-      };
-
       while (true) {
         const prepared = prepareRuntimeProviderRequest(this, {
           model: compactModel,
@@ -472,7 +452,8 @@ async function compactActiveConversationImpl(
           }
           if (isModelContextExceededError(error)) {
             if (reselectEntriesAfterPromptTooLong(error)) continue;
-            if (truncateEntriesAfterPromptTooLong(error)) continue;
+            // 不再从摘要请求里丢弃最老轮次：摘要没覆盖的内容会在最终 replaceMessages 时
+            // 被永久移出模型上下文。最近轮次已尽量转入保留段；仍超窗时明确失败并保留历史。
             throw createCompactPromptTooLongError({
               attempt: compactPromptTooLongAttempts,
               cause: error,
@@ -499,7 +480,7 @@ async function compactActiveConversationImpl(
           // compact summary 也可能以 finishReason 返回超窗而不是 throw；
           // 必须先进入同一套 recent preserve 重选逻辑，避免 finishReason 路径丢上下文。
           if (reselectEntriesAfterPromptTooLong(contextError)) continue;
-          if (truncateEntriesAfterPromptTooLong(contextError)) continue;
+          // 与 throw 路径一致：不再靠丢弃最老轮次换取摘要成功。
           throw createCompactPromptTooLongError({
             attempt: compactPromptTooLongAttempts,
             cause: contextError,
@@ -776,10 +757,6 @@ async function compactActiveConversationImpl(
 
 function isAutoCompactRetryableError(error: unknown): boolean {
   return isCoreError(error) ? error.retryable : true;
-}
-
-function canUseCompactSummaryTruncationFallback(trigger: CompactTrigger): boolean {
-  return trigger !== CompactTrigger.Auto && trigger !== CompactTrigger.Reactive;
 }
 
 function selectInitialCompactEntriesForActiveConversation(input: {

@@ -2,6 +2,7 @@
 // Event Reducer - State projection from events
 // ============================================================
 
+import { estimateContextTokensFromUsageBreakdown } from "@zcode/shared";
 import type {
   SessionEvent,
   SessionCreatedPayload,
@@ -220,7 +221,14 @@ export class EventReducer {
       }
       // AI SDK v6 的 provider input 已经是 total input（含 cache read/write）；
       // 这里通过统一 helper 计算 context used，避免各处重复理解 cache breakdown。
-      const contextUsed = getModelUsageContextTokens(payload.usage);
+      // 流式 Anthropic 代理可能只回 output_tokens；此时用请求 breakdown 的字符估算，
+      // 不能把 output 当成整个上下文，否则 meter 会显示成 328/1M 的假水位。
+      const contextUsed =
+        getModelUsageContextTokens(payload.usage) ??
+        estimateContextTokensFromUsageBreakdown(
+          payload.contextUsageBreakdown,
+          payload.usage?.outputTokens,
+        );
       return {
         ...p,
         ...(contextUsed !== undefined ? { contextUsed } : {}),

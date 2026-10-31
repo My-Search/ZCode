@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { estimateContextTokensFromUsageBreakdown } from "@zcode/shared";
 
 import {
   SessionEventType,
@@ -102,6 +103,38 @@ describe("model usage contracts", () => {
       }),
     ).toBe(137_154);
     expect(getModelUsageInputWindowTokens({ outputTokens: 3, cacheReadTokens: 5 })).toBe(5);
+  });
+
+  it("treats output-only streaming usage as missing input, not as context usage", () => {
+    // 流式 Anthropic 代理只在 message_start 回 input_tokens=0，最终只带 output_tokens；
+    // 这类 usage 不能渲染成 328/1M 的假水位。
+    expect(
+      getModelUsageContextTokens({
+        inputTokens: 0,
+        outputTokens: 328,
+        totalTokens: 328,
+      }),
+    ).toBeUndefined();
+    expect(
+      getModelUsageContextTokens({
+        outputTokens: 328,
+        totalTokens: 328,
+      }),
+    ).toBeUndefined();
+    expect(
+      getModelUsageInputWindowTokens({
+        inputTokens: 0,
+        outputTokens: 328,
+        totalTokens: 328,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("estimates context usage from the request breakdown when input usage is missing", () => {
+    expect(
+      estimateContextTokensFromUsageBreakdown([{ chars: 600 }, { chars: 300 }], 20),
+    ).toBe(320);
+    expect(estimateContextTokensFromUsageBreakdown([], 20)).toBeUndefined();
   });
 
   it("collects model usage from model_complete events", () => {

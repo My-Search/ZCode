@@ -286,10 +286,8 @@ export type {
 export { createContextBuilder, estimateTokens } from "../context/index.js";
 export type { EnvInfo, ProjectContext, UserInstructionsOptions } from "../context/index.js";
 export {
-  COMPACT_PROMPT_TOO_LONG_RETRY_MARKER,
   COMPACT_PROMPT_TOO_LONG_USER_MESSAGE,
   DEFAULT_COMPACT_CONTEXT_WINDOW,
-  MAX_COMPACT_PROMPT_TOO_LONG_RETRIES,
   MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   buildCompactPrompt,
   buildCompactSummaryMessage,

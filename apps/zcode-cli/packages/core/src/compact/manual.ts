@@ -53,9 +53,6 @@ export interface BuildManualCompactBoundaryInput {
   willRetriggerNextTurn?: boolean;
 }
 
-export const MAX_COMPACT_PROMPT_TOO_LONG_RETRIES = 3;
-export const COMPACT_PROMPT_TOO_LONG_RETRY_MARKER =
-  "[earlier conversation truncated for compaction retry]";
 export const COMPACT_PROMPT_TOO_LONG_USER_MESSAGE =
   "Conversation too long to compact automatically. Try /compact again after narrowing the active context.";
 

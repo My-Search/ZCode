@@ -373,6 +373,33 @@ describe("EventReducer", () => {
       expect(projection.contextUsed).toBe(17_778);
     });
 
+    it("estimates main context from request breakdown when streaming usage has no input tokens", () => {
+      const events: SessionEvent[] = [
+        createSessionEvent(SessionEventType.SessionCreated, sessionId, {
+          mode: "build",
+          contextWindow: 1_000_000,
+        }),
+        createSessionEvent(SessionEventType.ModelComplete, sessionId, {
+          content: "streamed reply",
+          querySource: "main_turn",
+          stopReason: "stop",
+          usage: {
+            inputTokens: 0,
+            outputTokens: 328,
+            totalTokens: 328,
+          },
+          contextUsageBreakdown: [
+            { source: "messages", chars: 900 },
+            { source: "system_prompt", chars: 600 },
+          ],
+        }),
+      ];
+
+      const projection = reducer.reduce(events);
+      // 1500 字符 / 3 + 328 output；不能退回成 output-only 的 328。
+      expect(projection.contextUsed).toBe(828);
+    });
+
     it("should project the current session goal from target_changed events", () => {
       const target = buildTarget(sessionId, "Ship target events", "active");
       const completedTarget = { ...target, status: "complete" as const };

@@ -45,7 +45,6 @@ import { countContinuePrompts } from "./runtime-output-token-continuation-test-h
 import {
   buildCompactPrompt,
   buildCompactSummaryMessage,
-  COMPACT_PROMPT_TOO_LONG_RETRY_MARKER,
   estimateMessageTokens,
   formatCompactSummary,
 } from "../src/compact/index.js";
@@ -2881,7 +2880,7 @@ describe("AgentRuntime manual compact", () => {
     },
   );
 
-  it("retries compact summaries with older rounds dropped when the compact prompt is too long", async () => {
+  it("retries compact summaries by preserving newer rounds when the compact prompt is too long", async () => {
     const sessionId = createSessionId("runtime-compact-ptl-retry");
     const eventStore = createTestSessionEventStore();
     const requests: Array<{
@@ -2972,16 +2971,16 @@ describe("AgentRuntime manual compact", () => {
     expect(compactModelRetries).toEqual([0, 1]);
     expect(boundary).toMatchObject({
       trigger: CompactTrigger.Manual,
-      summarizedMessageCount: 4,
+      summarizedMessageCount: 6,
+      keptMessageCount: 1,
     });
     expect(firstCompactContext).toContain("first compact ptl setup");
-    // 最早一组含环境与模型公告（自定义 prompt 也发送），丢掉这一组已足够补上缺口。
-    expect(retryCompactContext).not.toContain("first compact ptl setup");
-    expect(retryCompactContext).not.toContain("# Environment");
+    // 超窗时把最近一组移入保留段，摘要请求仍需覆盖更早内容；不再丢弃最老轮次。
+    expect(retryCompactContext).toContain("first compact ptl setup");
     expect(retryCompactContext).toContain("second compact ptl setup");
-    expect(retryCompactContext).toContain(COMPACT_PROMPT_TOO_LONG_RETRY_MARKER);
-    expect(retryCompactContext).toContain("normal response 2");
+    expect(retryCompactContext).not.toContain("normal response 2");
     expect(postCompactContext).toContain("PTL retry summary keeps the last assistant round");
+    expect(postCompactContext).toContain("normal response 2");
     expect(postCompactContext).not.toContain("first compact ptl setup");
   });
 
@@ -3063,9 +3062,12 @@ describe("AgentRuntime manual compact", () => {
 
     expect(compactRequests).toHaveLength(2);
     expect(compactModelRetries).toEqual([0, 1]);
-    expect(retryCompactContext).not.toContain("first finish reason compact setup");
+    // 超窗时保留最近一组，摘要请求继续覆盖更早内容，不再丢弃最老轮次。
+    expect(retryCompactContext).toContain("first finish reason compact setup");
     expect(retryCompactContext).toContain("second finish reason compact setup");
+    expect(retryCompactContext).not.toContain("normal response 2");
     expect(postCompactContext).toContain("Finish reason retry summary keeps the newest setup");
+    expect(postCompactContext).toContain("normal response 2");
     expect(postCompactContext).not.toContain("first finish reason compact setup");
   });
 
@@ -3147,13 +3149,15 @@ describe("AgentRuntime manual compact", () => {
 
     expect(compactRequests).toHaveLength(2);
     expect(compactModelRetries).toEqual([0, 1]);
-    expect(retryCompactContext).not.toContain("first empty length compact setup");
+    expect(retryCompactContext).toContain("first empty length compact setup");
     expect(retryCompactContext).toContain("second empty length compact setup");
+    expect(retryCompactContext).not.toContain("normal response 2");
     expect(postCompactContext).toContain("Empty length retry summary keeps the newest setup");
+    expect(postCompactContext).toContain("normal response 2");
     expect(postCompactContext).not.toContain("first empty length compact setup");
   });
 
-  it("stops compact prompt-too-long retries after three older-round truncations", async () => {
+  it("stops compact prompt-too-long retries after preserving every possible round", async () => {
     const sessionId = createSessionId("runtime-compact-ptl-retry-limit");
     const eventStore = createTestSessionEventStore();
     const requests: Array<"compact" | "normal"> = [];
@@ -3203,8 +3207,8 @@ describe("AgentRuntime manual compact", () => {
       .map((payload) => payload.compactPromptTooLongRetry);
     const turnError = events.find((event) => event.type === SessionEventType.TurnError);
 
-    expect(requests.filter((request) => request === "compact")).toHaveLength(4);
-    expect(compactModelRetries).toEqual([0, 1, 2, 3]);
+    expect(requests.filter((request) => request === "compact")).toHaveLength(5);
+    expect(compactModelRetries).toEqual([0, 1, 2, 3, 4]);
     expect(turnError?.payload).toMatchObject({
       error: { type: CoreErrorType.ModelContextExceeded },
     });

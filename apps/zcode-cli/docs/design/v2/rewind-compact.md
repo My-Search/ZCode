@@ -23,6 +23,11 @@ Auto compact 的触发必须优先使用 provider 返回的真实输入 token �
 
 这样做的原因是 OpenAI-compatible provider 可能在 tokenizer、工具 schema、reasoning 或服务端包装上与本地估算存在数量级差异；真实服务端用量是 compact 决策的最高优先级事实源。
 
+**“真实用量”必须包含输入侧**。`inputTokens` 缺失、为 0，或 `totalTokens` 只等于 `outputTokens`（流式 Anthropic 兼容代理常见：`message_start.usage.input_tokens=0`，`message_delta` 只带 output），都视为“没有真实 provider 用量”，不能把 output 当成已用上下文——否则输入栏 meter 会显示成 `328/1M (0%)` 这类假水位，用户误以为上下文被清空。此时：
+
+1. projection / 持久化 token 记录不产出 context used，也不向更早的 assistant 回溯旧 anchor。
+2. UI 与冷恢复改用主轮次请求 breakdown 的字符数估算兜底（该分解已覆盖 system prompt、工具 schema 与消息正文；估算公式 `ceil(chars / 3) + outputTokens`）。
+
 本地估算是 provider usage 不可用时的保守水位判断。它必须同时计算普通正文和
 `reasoning` block 的文本；不能复用只投影可见正文的 helper 后把 reasoning 计为 0。
 provider 返回的 `reasoningTokens` 已包含在 `outputTokens` 中，复用 usage anchor 时不得再次
@@ -30,6 +35,12 @@ provider 返回的 `reasoningTokens` 已包含在 `outputTokens` 中，复用 us
 canonical history 或 provider-specific reasoning 回放规则。
 
 如果 provider 通过 finish reason 表示上下文溢出，例如 GLM SSE 中的 `model_context_window_exceeded`，runtime 必须把它归一为 `ModelContextExceeded`，触发 reactive compact 或向上抛出结构化错误，不能把空内容当成普通 `end_turn`。
+
+### 摘要请求超窗的降级：保留最近轮次，不丢弃历史
+
+compact 摘要请求自身超窗（provider 报错或 finish reason 溢出）时，manual / auto / reactive 使用同一套降级策略：按 assistant-started 轮次把**最近**的组移入保留段（不进入摘要请求、原样保留），缩小摘要请求后重试。manual 过去会从摘要请求里丢弃最老轮次并照常替换全部历史，被丢弃的轮次从未进入摘要，压缩后模型永久丢失这段上下文——已废除，禁止恢复该行为。
+
+重选到无法再缩小（只剩最后一组仍超窗）时，compact 必须以 `ModelContextExceeded` 明确失败，保留完整历史；不允许用“摘要没看到的内容”替换历史。
 
 ## 核心原则
 

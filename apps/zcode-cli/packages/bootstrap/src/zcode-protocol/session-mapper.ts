@@ -1,6 +1,7 @@
 import {
   ZCODE_PROTOCOL_NAME,
   ZCODE_PROTOCOL_VERSION,
+  estimateContextTokensFromUsageBreakdown,
   getZCodeGoalActiveIterationCount,
   zcodeApiRetryFromModelNetworkStatusPayload,
   zcodeApiRetryFromStreamRecoveryPayload,
@@ -613,13 +614,21 @@ export function resolveSessionContextUsage(input: {
     input.messages,
     input.projection.contextWindow,
   );
+  const projectionContextUsage = contextUsageFromProjection(
+    input.projection,
+    persistedContextUsage?.used === input.projection.contextUsed
+      ? persistedContextUsage.cache
+      : undefined,
+  );
   return applyContextUsageBreakdown(
-    contextUsageFromProjection(
-      input.projection,
-      persistedContextUsage?.used === input.projection.contextUsed
-        ? persistedContextUsage.cache
-        : undefined,
-    ) ?? persistedContextUsage,
+    projectionContextUsage ??
+      persistedContextUsage ??
+      // 流式 provider 只回 output token 时 projection 与持久化 assistant 都无法给出输入侧用量；
+      // 用主轮次请求 breakdown 的字符数估算，避免 UI 显示成 output-only 的假水位。
+      contextUsageEstimateFromBreakdownEvents(
+        input.persistedContextUsageBreakdownEvents ?? [],
+        input.projection.contextWindow,
+      ),
     latestContextUsageBreakdownFromEvents(input.persistedContextUsageBreakdownEvents ?? []),
   );
 }
@@ -670,6 +679,48 @@ function latestContextUsageBreakdownFromEvents(
     return {
       breakdown: parsed.data,
       ...(contextWindow !== undefined ? { contextWindow } : {}),
+      used,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Provider 没有可用 input token 时（流式 Anthropic 代理常见），用主轮次请求的字符分解估算。
+ * breakdown 已包含 system prompt、工具 schema 与消息正文，比 output-only 更接近真实上下文。
+ */
+function contextUsageEstimateFromBreakdownEvents(
+  events: readonly SessionEvent[],
+  contextWindow: number,
+): ZCodeSessionContextUsage | undefined {
+  if (contextWindow <= 0) {
+    return undefined;
+  }
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event || event.type !== SessionEventType.ModelComplete) {
+      continue;
+    }
+    const payload = event.payload as Partial<ModelCompletePayload>;
+    const querySource = stringValue(payload.querySource);
+    if (querySource !== undefined && querySource !== "main_turn") {
+      continue;
+    }
+    const parsed = zcodeContextUsageBreakdownSchema.safeParse(payload.contextUsageBreakdown);
+    if (!parsed.success || parsed.data.length === 0) {
+      continue;
+    }
+    const used = estimateContextTokensFromUsageBreakdown(
+      parsed.data,
+      payload.usage?.outputTokens,
+    );
+    if (used === undefined) {
+      continue;
+    }
+    return {
+      breakdown: parsed.data,
+      cost: null,
+      size: contextWindow,
       used,
     };
   }
@@ -770,7 +821,9 @@ function contextUsageFromPersistedMessages(
     }
     const used = contextUsedFromTokens(message.info.tokens);
     if (used === undefined) {
-      continue;
+      // 最新 assistant 没有可用 input usage（流式代理只回 output）。不能继续向更老消息回溯：
+      // 旧 provider/压缩前的 anchor 会把 meter 停在过期水位；交给 breakdown 字符估算兜底。
+      return undefined;
     }
     // protocol eventStore 是运行期内存账本，重启 resume 后 projection.contextUsed 会回到 0。
     // context window 消耗是 input + output；恢复时优先用 provider total，否则用持久化的 input/output 还原 meter。
@@ -790,6 +843,7 @@ function contextUsedFromTokens(
         total?: number;
         input: number;
         output?: number;
+        cache?: { read?: number; write?: number };
       }
     | undefined,
 ): number | undefined {
@@ -797,17 +851,23 @@ function contextUsedFromTokens(
     return undefined;
   }
 
+  const output = nonNegativeInteger(tokens.output) ?? 0;
+  const input = positiveInteger(tokens.input);
+  if (input !== undefined) {
+    return input + output;
+  }
+
+  // total 只等于 output 时，provider 没有返回输入侧用量（流式 Anthropic 代理常见）。
+  // 这里返回 undefined，交由 breakdown/消息估算兜底，不能把 output 当成上下文。
   const total = positiveInteger(tokens.total);
-  if (total !== undefined) {
+  if (total !== undefined && total > output) {
     return total;
   }
 
-  const input = positiveInteger(tokens.input);
-  if (input === undefined) {
-    return undefined;
-  }
-
-  return input + (nonNegativeInteger(tokens.output) ?? 0);
+  const cache =
+    (nonNegativeInteger(tokens.cache?.read) ?? 0) +
+    (nonNegativeInteger(tokens.cache?.write) ?? 0);
+  return cache > 0 ? cache + output : undefined;
 }
 
 function contextCacheUsageFromMessages(

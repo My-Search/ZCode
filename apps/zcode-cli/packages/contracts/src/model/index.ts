@@ -556,14 +556,15 @@ export function getModelUsageContextTokens(usage?: ModelUsage): number | undefin
   if (!usage) return undefined;
 
   const inputTokens = getModelUsageInputWindowTokens(usage);
-  const outputTokens = nonNegativeInteger(usage.outputTokens) ?? 0;
-  const contextTokens = (inputTokens ?? 0) + outputTokens;
-  if (contextTokens > 0) {
-    return contextTokens;
+  // Provider 只回 output_tokens（流式 Anthropic 代理常见）时，输入窗口无法确认。
+  // 不能把 output 当上下文：否则 UI 会显示 328/1M 这类假水位，用户误以为上下文被清空。
+  // 返回 undefined，让调用方使用请求 breakdown 的字符估算兜底。
+  if (inputTokens === undefined) {
+    return undefined;
   }
 
-  const totalTokens = positiveInteger(usage.totalTokens);
-  return totalTokens;
+  const outputTokens = nonNegativeInteger(usage.outputTokens) ?? 0;
+  return inputTokens + outputTokens;
 }
 
 export function getModelUsageInputWindowTokens(usage?: ModelUsage): number | undefined {
@@ -579,7 +580,11 @@ export function getModelUsageInputWindowTokens(usage?: ModelUsage): number | und
   const totalTokens = positiveInteger(usage.totalTokens);
   if (totalTokens !== undefined) {
     const outputTokens = nonNegativeInteger(usage.outputTokens) ?? 0;
-    return Math.max(0, totalTokens - outputTokens);
+    const derivedInputTokens = totalTokens - outputTokens;
+    // total 只等于 output 时同样说明 provider 没有提供输入侧用量，不能返回 0。
+    if (derivedInputTokens > 0) {
+      return derivedInputTokens;
+    }
   }
 
   const cacheTokens =

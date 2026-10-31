@@ -29,7 +29,6 @@ export {
   selectCompactEntries,
   selectCompactEntriesAfterPromptTooLong,
   selectCompactEntriesForInitialPromptTooLong,
-  truncateCompactSummaryRequestEntriesAfterPromptTooLong,
 } from "./compact-selection.js";
 
 export interface RuntimeMicrocompactResult {

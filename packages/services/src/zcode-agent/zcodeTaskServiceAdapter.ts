@@ -99,6 +99,7 @@ import {
   type ZCodeWorkspaceTaskListChanged,
   type InputId,
   type TraceId,
+  estimateContextTokensFromUsageBreakdown,
   zcodeContextUsageBreakdownSchema,
   zcodeSessionSettingsStateSchema,
   type ZCodeDeliveryKind,
@@ -5624,8 +5625,21 @@ function contextUsageFromPayload(payload: Record<string, unknown>): ContextUsage
   const explicitUsed = numberValue(payload.contextUsed ?? projection.contextUsed);
   const useModelUsageForContext = shouldUseModelUsageForContext(payload);
   const modelUsageUsed = useModelUsageForContext ? contextUsageTokensFromPayload(usage) : undefined;
+  // 流式 Anthropic 代理可能只回 output_tokens；此时用主轮次 breakdown 的字符数估算，
+  // 不能把 output 当上下文，否则旧 task UI 也会显示 output-only 的假水位。
+  const parsedContextBreakdown = zcodeContextUsageBreakdownSchema.safeParse(
+    payload.contextUsageBreakdown,
+  );
+  const estimatedUsed =
+    useModelUsageForContext && parsedContextBreakdown.success
+      ? estimateContextTokensFromUsageBreakdown(
+          parsedContextBreakdown.data,
+          numberValue(usage.outputTokens ?? usage.output),
+        )
+      : undefined;
   const used =
     modelUsageUsed ??
+    estimatedUsed ??
     // 主轮次模型返回 usage 时必须以真实网络 token 统计为准；
     // context window 是 input + output 共享窗口，不能再只用 inputTokens 渲染 meter。
     // projection.contextUsed 是 runtime 估算/恢复事实源，只在缺少 usage 时兜底。
@@ -5665,7 +5679,11 @@ function contextUsageTokensFromPayload(usage: Record<string, unknown>): number |
 
   const totalTokens = positiveIntegerValue(usage.totalTokens ?? usage.total);
   if (totalTokens !== undefined) {
-    return totalTokens;
+    const outputTokens = nonNegativeIntegerValue(usage.outputTokens ?? usage.output) ?? 0;
+    // total 只等于 output 时说明 provider 没有提供输入侧用量，不能返回 output-only。
+    if (totalTokens > outputTokens) {
+      return totalTokens;
+    }
   }
 
   const cacheTokens =

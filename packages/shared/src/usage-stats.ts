@@ -8,6 +8,36 @@ import type { ZCodeAccountAccess, ZCodeProviderAccountAccess } from "./zcode-pro
 
 export const ESTIMATED_TOKEN_CHAR_DIVISOR = 3;
 
+export interface ContextUsageBreakdownChars {
+  chars: number;
+}
+
+/**
+ * Provider 没有返回可用 input token 时的上下文兜底估算。
+ *
+ * Anthropic 兼容代理的流式响应可能只在 message_start 里给 input_tokens=0，
+ * 最终 message_delta 只带 output_tokens；此时只拿 output 当“已用上下文”会显示
+ * 328/1M 这类假水位。请求组装阶段记录的 breakdown 已覆盖 system prompt、工具
+ * schema 和消息正文，用它的字符数估算更接近真实上下文。
+ */
+export function estimateContextTokensFromUsageBreakdown(
+  breakdown: readonly ContextUsageBreakdownChars[] | undefined,
+  outputTokens?: number,
+): number | undefined {
+  const chars = (breakdown ?? []).reduce(
+    (total, item) => (Number.isFinite(item.chars) && item.chars > 0 ? total + item.chars : total),
+    0,
+  );
+  if (chars <= 0) {
+    return undefined;
+  }
+  const output =
+    typeof outputTokens === "number" && Number.isFinite(outputTokens) && outputTokens > 0
+      ? Math.floor(outputTokens)
+      : 0;
+  return Math.ceil(chars / ESTIMATED_TOKEN_CHAR_DIVISOR) + output;
+}
+
 export type UsageStatsRange = "all" | "7d" | "30d";
 export type CodingPlanUsageRange = "today" | "7d" | "30d" | "custom";
 export type CodingPlanUsageGranularity = "hour" | "day";
