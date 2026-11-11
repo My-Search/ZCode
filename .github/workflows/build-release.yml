@@ -312,7 +312,11 @@ jobs:
             target_arch: x64
             pretty: macOS x64
 
-          - runner: windows-latest
+          # windows-latest 已迁移到 VS 2026（VS 18）镜像（2026-11-11 实测
+          # CMake "Visual Studio 17 2022" generator "could not find any instance"，
+          # run 43015704430 Windows leg 失败）；改用 windows-2022（VS Enterprise 2022
+          # 17.14，含 MSVC v143），与 build-windows-runtime-host.mjs 的 VS17 generator 匹配。
+          - runner: windows-2022
             target_os: win
             target_arch: x64
             pretty: Windows x64
