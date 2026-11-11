@@ -373,23 +373,42 @@ jobs:
       - name: Install Linux packaging deps
         if: runner.os == 'Linux'
         run: |
-          # apt 源（azure.archive.ubuntu.com）在 ubuntu runner 上偶发持续 DNS
-          # 解析失败（2026-11-11 实测连续多轮 run 失败），重试 3 次、间隔 15 秒，
-          # 覆盖单次抖动；全部失败才报错。
+          # ubuntu runner 的 apt 镜像 azure.archive.ubuntu.com 出现过持续 DNS 解析
+          # 失败（2026-11-11：npm/github 正常、仅 apt 域名 Temporary failure
+          # resolving，单次 run 内 3 次重试也未能恢复）。先重试既有镜像覆盖抖动；
+          # 仍失败则把 sources 切到官方 archive.ubuntu.com（不同 DNS 名）再重试。
           install_linux_deps() {
             sudo apt-get update -qq &&
             sudo apt-get install -y -qq rpm xz-utils libfuse2 libarchive-tools
           }
+          ok=false
           attempt=1
           until install_linux_deps; do
-            if [ "$attempt" -ge 3 ]; then
-              echo "::error::apt-get failed after $attempt attempts"
-              exit 1
-            fi
-            echo "::warning::apt-get attempt $attempt failed, retrying in 15s"
+            if [ "$attempt" -ge 3 ]; then break; fi
+            echo "::warning::apt attempt $attempt failed, retrying in 15s"
             sleep 15
             attempt=$((attempt + 1))
           done
+          if install_linux_deps; then
+            ok=true
+          else
+            echo "::warning::azure mirror keeps failing — switching sources to archive.ubuntu.com"
+            sudo sed -i \
+              's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+            attempt=1
+            until install_linux_deps; do
+              if [ "$attempt" -ge 3 ]; then break; fi
+              echo "::warning::archive.ubuntu.com attempt $attempt failed, retrying in 15s"
+              sleep 15
+              attempt=$((attempt + 1))
+            done
+            if install_linux_deps; then ok=true; fi
+          fi
+          if [ "$ok" != "true" ]; then
+            echo "::error::apt-get failed on all mirrors"
+            exit 1
+          fi
 
       # ── Toolchain ────────────────────────────────────────
       - uses: pnpm/action-setup@v4
