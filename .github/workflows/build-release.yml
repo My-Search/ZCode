@@ -373,8 +373,23 @@ jobs:
       - name: Install Linux packaging deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq rpm xz-utils libfuse2 libarchive-tools 2>&1
+          # apt 源（azure.archive.ubuntu.com）在 ubuntu runner 上偶发持续 DNS
+          # 解析失败（2026-11-11 实测连续多轮 run 失败），重试 3 次、间隔 15 秒，
+          # 覆盖单次抖动；全部失败才报错。
+          install_linux_deps() {
+            sudo apt-get update -qq &&
+            sudo apt-get install -y -qq rpm xz-utils libfuse2 libarchive-tools
+          }
+          attempt=1
+          until install_linux_deps; do
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::apt-get failed after $attempt attempts"
+              exit 1
+            fi
+            echo "::warning::apt-get attempt $attempt failed, retrying in 15s"
+            sleep 15
+            attempt=$((attempt + 1))
+          done
 
       # ── Toolchain ────────────────────────────────────────
       - uses: pnpm/action-setup@v4
