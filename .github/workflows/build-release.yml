@@ -296,16 +296,16 @@ jobs:
     if: needs.sync.outputs.should_build == 'true' && github.event.inputs.dry_run != 'true'
     strategy:
       fail-fast: false
-    matrix:
-      include:
-        # macos-14 arm64 runner 配置已被 GitHub 下线（2026-11-11 实测
-        # "The configuration 'macos-14-arm64-us-default' is not supported"，
-        # run 43014310533 秒失败），arm64 迁到 macos-15（同为 arm64 原生）；
-        # x64 继续用 macos-15 跨架构打包（既有发版已验证）。
-        - runner: macos-15
-          target_os: mac
-          target_arch: arm64
-          pretty: macOS arm64
+      matrix:
+        include:
+          # macos-14 arm64 runner 配置已被 GitHub 下线（2026-11-11 实测
+          # "The configuration 'macos-14-arm64-us-default' is not supported"，
+          # run 43014310533 秒失败），arm64 迁到 macos-15（同为 arm64 原生）；
+          # x64 继续用 macos-15 跨架构打包（既有发版已验证）。
+          - runner: macos-15
+            target_os: mac
+            target_arch: arm64
+            pretty: macOS arm64
 
           - runner: macos-15
             target_os: mac
