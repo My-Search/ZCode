@@ -39,14 +39,27 @@ export function extractPrebuiltArchive({ archivePath, archiveExt, extractDir, cw
   mkdirSync(extractDir, { recursive: true });
   if (archiveExt === "zip") {
     if (process.platform === "win32") {
-      runCommand("powershell.exe", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        `Expand-Archive -LiteralPath '${archivePath.replaceAll("'", "''")}' -DestinationPath '${extractDir.replaceAll("'", "''")}' -Force`,
-      ]);
+      runCommand(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          `Expand-Archive -LiteralPath '${archivePath.replaceAll("'", "''")}' -DestinationPath '${extractDir.replaceAll("'", "''")}' -Force`,
+        ],
+        {
+          // Bugfix: windows-2022 runner 镜像更新后父进程环境带 PSModulePath（指向 PowerShell 7
+          // 模块目录），Windows PowerShell 5.1 按该变量自动加载到 PS7 的
+          // Microsoft.PowerShell.Archive；其 psm1 调用 3 参 ExtractToDirectory（.NET Core 重载），
+          // 在 5.1 的 .NET Framework 上报 MethodCountCouldNotFindBest，Expand-Archive 失败，
+          // ugrep.exe 解压不出来（2026-11-21 run 44912926493，脚本本身无改动、11-13 同提交还成功）。
+          // spawn 时删除该变量（Node 跳过值为 undefined 的环境变量），让 5.1 从自身
+          // PSHOME 解析内置模块；与 powershell-command.mjs「不把外部环境变量当作模块信任根」一致。
+          env: { ...process.env, PSModulePath: undefined },
+        },
+      );
       return;
     }
 
